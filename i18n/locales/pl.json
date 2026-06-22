@@ -158,6 +158,22 @@
     "openLogs": "Otwórz w Logach",
     "dismiss": "Zamknij"
   },
+  "quickPlay": {
+    "playWorld": "Szybka gra",
+    "connectServer": "Szybkie połączenie"
+  },
+  "server": {
+    "offline": "Offline",
+    "players": "{online}/{max} graczy"
+  },
+  "jvmPreset": {
+    "label": "Preset",
+    "none": "Brak",
+    "aikar": "Flagi Aikara",
+    "zgc": "ZGC (Java 21+)",
+    "shenandoah": "Shenandoah (Java 17+)",
+    "custom": "Własne"
+  },
 
   "export": {
     "title": "Eksport: {name}",

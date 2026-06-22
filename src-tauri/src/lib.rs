@@ -102,6 +102,8 @@ pub fn run() {
             commands::launch::repair_instance,
             commands::launch::is_instance_running,
             commands::launch::stop_instance,
+            // Server ping
+            commands::ping::ping_server,
             // Version metadata (pickers)
             commands::meta::get_minecraft_versions,
             commands::meta::get_loader_versions,

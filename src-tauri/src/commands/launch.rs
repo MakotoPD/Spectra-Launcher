@@ -17,7 +17,7 @@ use lyceris::minecraft::launch::launch;
 use lyceris::minecraft::loader::{
     fabric::Fabric, forge::Forge, neoforge::NeoForge, quilt::Quilt, Loader as LyLoader,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter as _, Manager, State};
 
 use crate::commands::auth::refresh_active_account;
@@ -25,6 +25,15 @@ use crate::commands::instances;
 use crate::commands::settings::get_settings;
 use crate::models::{AccountKind, Instance, Loader};
 use crate::{paths, store, AppState};
+
+/// Describes which game session to jump into immediately on launch.
+/// Requires Minecraft 1.20+ (the `--quickPlay*` flags were added then).
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind")]
+pub enum QuickPlay {
+    Singleplayer { world: String },
+    Multiplayer { host: String, port: Option<u16> },
+}
 
 #[derive(Clone, Serialize)]
 struct MultiProgress {
@@ -139,6 +148,7 @@ pub async fn launch_instance(
     app: AppHandle,
     state: State<'_, AppState>,
     id: String,
+    quick_play: Option<QuickPlay>,
 ) -> Result<(), String> {
     {
         let mut running = state.running.lock().map_err(|e| e.to_string())?;
@@ -165,7 +175,7 @@ pub async fn launch_instance(
     }
 
     // Any early failure must release the running flag.
-    let result = launch_inner(&app, &id).await;
+    let result = launch_inner(&app, &id, quick_play).await;
     if result.is_err() {
         if let Ok(mut running) = state.running.lock() {
             running.remove(&id);
@@ -174,7 +184,7 @@ pub async fn launch_instance(
     result
 }
 
-async fn launch_inner(app: &AppHandle, id: &str) -> Result<(), String> {
+async fn launch_inner(app: &AppHandle, id: &str, quick_play: Option<QuickPlay>) -> Result<(), String> {
     let instance: Instance =
         store::read_json(&paths::instance_config_file(id))?.ok_or("instance not found")?;
     let settings = get_settings()?;
@@ -225,6 +235,22 @@ async fn launch_inner(app: &AppHandle, id: &str) -> Result<(), String> {
     if let Some(h) = height {
         game_args.push("--height".into());
         game_args.push(h.to_string());
+    }
+    // Quick Play: jump directly into a world or server (Minecraft 1.20+).
+    match quick_play {
+        Some(QuickPlay::Singleplayer { world }) => {
+            game_args.push("--quickPlaySingleplayer".into());
+            game_args.push(world);
+        }
+        Some(QuickPlay::Multiplayer { host, port }) => {
+            game_args.push("--quickPlayMultiplayer".into());
+            let addr = match port {
+                Some(p) if p != 25565 => format!("{host}:{p}"),
+                _ => host,
+            };
+            game_args.push(addr);
+        }
+        None => {}
     }
 
     // Pre-launch hook (waited on so it can prepare things before the game starts).

@@ -109,7 +109,25 @@
 
         <div class="space-y-2">
           <USwitch v-model="form.override_java_args" :label="$t('instSettings.customJavaArgs')" :description="$t('instSettings.customJavaArgsDesc')" />
-          <fieldset :disabled="!form.override_java_args" :class="{ 'opacity-50': !form.override_java_args }">
+          <fieldset :disabled="!form.override_java_args" :class="{ 'opacity-50': !form.override_java_args }" class="space-y-2">
+            <!-- JVM Preset selector -->
+            <div class="flex items-center gap-2">
+              <span class="shrink-0 text-xs text-muted">{{ $t('jvmPreset.label') }}</span>
+              <div class="flex flex-wrap gap-1.5">
+                <button
+                  v-for="p in jvmPresets"
+                  :key="p.key"
+                  type="button"
+                  class="rounded-md border px-2.5 py-1 text-xs font-medium transition"
+                  :class="activePreset === p.key
+                    ? 'border-primary-500/60 bg-primary-500/15 text-primary-300'
+                    : 'border-default bg-white/3 text-neutral-400 hover:border-white/20 hover:text-neutral-200'"
+                  @click="applyPreset(p.key)"
+                >
+                  {{ $t(p.label) }}
+                </button>
+              </div>
+            </div>
             <UTextarea v-model="javaArgsText" :rows="3" placeholder="-Xmx4G -XX:+UseG1GC" class="w-full font-mono text-xs" />
           </fieldset>
         </div>
@@ -206,6 +224,45 @@ const javaArgsText = computed({
   get: () => form.value?.java_args.join(' ') ?? '',
   set: (v: string) => { if (form.value) form.value.java_args = v.split(/\s+/).filter(Boolean) },
 })
+
+// ── JVM Presets ──────────────────────────────────────────────────────────────
+const JVM_PRESET_FLAGS: Record<string, string[]> = {
+  none: [],
+  aikar: [
+    '-XX:+UseG1GC', '-XX:+ParallelRefProcEnabled', '-XX:MaxGCPauseMillis=200',
+    '-XX:+UnlockExperimentalVMOptions', '-XX:+DisableExplicitGC',
+    '-XX:+AlwaysPreTouch', '-XX:G1NewSizePercent=30', '-XX:G1MaxNewSizePercent=40',
+    '-XX:G1HeapRegionSize=8M', '-XX:G1ReservePercent=20', '-XX:G1HeapWastePercent=5',
+    '-XX:G1MixedGCCountTarget=4', '-XX:InitiatingHeapOccupancyPercent=15',
+    '-XX:G1MixedGCLiveThresholdPercent=90', '-XX:G1RSetUpdatingPauseTimePercent=5',
+    '-XX:SurvivorRatio=32', '-XX:+PerfDisableSharedMem', '-XX:MaxTenuringThreshold=1',
+  ],
+  zgc: ['-XX:+UseZGC', '-XX:+ZGenerational'],
+  shenandoah: ['-XX:+UseShenandoahGC', '-XX:ShenandoahGCMode=iu'],
+}
+
+const jvmPresets = [
+  { key: 'none', label: 'jvmPreset.none' },
+  { key: 'aikar', label: 'jvmPreset.aikar' },
+  { key: 'zgc', label: 'jvmPreset.zgc' },
+  { key: 'shenandoah', label: 'jvmPreset.shenandoah' },
+]
+
+/** Detects which preset matches the current java_args (or 'custom'). */
+const activePreset = computed(() => {
+  const current = form.value?.java_args ?? []
+  if (current.length === 0) return 'none'
+  for (const [key, flags] of Object.entries(JVM_PRESET_FLAGS)) {
+    if (key === 'none') continue
+    if (flags.length === current.length && flags.every((f, i) => f === current[i])) return key
+  }
+  return 'custom'
+})
+
+function applyPreset(key: string) {
+  if (!form.value) return
+  form.value.java_args = JVM_PRESET_FLAGS[key] ?? []
+}
 
 // Auto-save (debounced) whenever the form changes.
 let debounce: ReturnType<typeof setTimeout> | undefined

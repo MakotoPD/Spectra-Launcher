@@ -118,6 +118,22 @@ export interface CrashInfo {
   crash_report_rel: string | null
 }
 
+/** Quick Play payload — mirrors QuickPlay in launch.rs. MC 1.20+ only. */
+export type QuickPlay =
+  | { kind: 'Singleplayer'; world: string }
+  | { kind: 'Multiplayer'; host: string; port?: number }
+
+/** Server ping result — mirrors PingResult in ping.rs. */
+export interface PingResult {
+  latency_ms: number
+  version: string
+  protocol: number
+  online: number
+  max: number
+  motd: string
+  favicon: string | null
+}
+
 // Instance content (instance page tabs), mirrors src-tauri/src/commands/content.rs.
 export interface ScreenshotInfo { name: string; path: string; modified: number }
 export interface WorldInfo {

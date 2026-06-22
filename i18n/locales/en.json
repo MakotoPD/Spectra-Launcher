@@ -158,6 +158,22 @@
     "openLogs": "View in Logs",
     "dismiss": "Dismiss"
   },
+  "quickPlay": {
+    "playWorld": "Quick Play",
+    "connectServer": "Quick Connect"
+  },
+  "server": {
+    "offline": "Offline",
+    "players": "{online}/{max} players"
+  },
+  "jvmPreset": {
+    "label": "Preset",
+    "none": "None",
+    "aikar": "Aikar's Flags",
+    "zgc": "ZGC (Java 21+)",
+    "shenandoah": "Shenandoah (Java 17+)",
+    "custom": "Custom"
+  },
   "export": {
     "title": "Export {name}",
     "format": "Format",

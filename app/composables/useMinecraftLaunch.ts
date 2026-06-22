@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { toValue, type MaybeRefOrGetter } from 'vue'
+import type { QuickPlay } from '~/types/launcher'
 
 /**
  * Drives launching an instance and exposes its live state. Event listening +
@@ -41,13 +42,13 @@ export const useMinecraftLaunch = (instanceId?: MaybeRefOrGetter<string | undefi
 
   const runningId = computed(() => ac.list.value.find(a => a.kind === 'running')?.instanceId ?? null)
 
-  const launch = async (launchId: string) => {
+  const launch = async (launchId: string, quickPlay?: QuickPlay) => {
     errors.value = { ...errors.value, [launchId]: null }
     ac.clearLog(launchId)
     launchingIds.value = { ...launchingIds.value, [launchId]: true }
     await ac.attach()
     try {
-      await invoke('launch_instance', { id: launchId })
+      await invoke('launch_instance', { id: launchId, quickPlay: quickPlay ?? null })
     } catch (e) {
       errors.value = { ...errors.value, [launchId]: String(e) }
       ac.clear(launchId)

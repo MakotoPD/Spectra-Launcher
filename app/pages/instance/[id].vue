@@ -138,7 +138,7 @@
         <InstanceLogs v-if="activeTab === 'logs'" :instance-id="id" :initial-rel="initialCrashRel" />
 
         <!-- auto-detected content sections -->
-        <InstanceContent v-else-if="isContentTab" :instance-id="id" :tab="activeTab as ContentTab" />
+        <InstanceContent v-else-if="isContentTab" :instance-id="id" :tab="activeTab as ContentTab" @quick-play="handleQuickPlay" />
 
         <!-- mods: install + manage (enable/disable/delete) -->
         <InstanceMods v-else-if="activeTab === 'mods'" :instance-id="id" />
@@ -165,6 +165,7 @@
 <script setup lang="ts">
 import { invoke } from '@tauri-apps/api/core'
 import type { ModpackUpdate } from '~/types/modrinth'
+import type { QuickPlay } from '~/types/launcher'
 
 const route = useRoute()
 const router = useRouter()
@@ -344,6 +345,13 @@ const play = async () => {
   if (!instance.value) return
   try {
     await mc.launch(instance.value.id)
+  } catch { /* surfaced via mc.error */ }
+}
+
+const handleQuickPlay = async (qp: QuickPlay) => {
+  if (!instance.value) return
+  try {
+    await mc.launch(instance.value.id, qp)
   } catch { /* surfaced via mc.error */ }
 }
 

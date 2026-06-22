@@ -9,5 +9,6 @@ pub mod launch;
 pub mod meta;
 pub mod modrinth;
 pub mod mods;
+pub mod ping;
 pub mod settings;
 pub mod skins;

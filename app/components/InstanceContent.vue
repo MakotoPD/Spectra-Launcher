@@ -82,6 +82,18 @@
             <span v-if="w.last_played">· {{ formatDate(w.last_played) }}</span>
           </div>
         </div>
+        <!-- Quick Play button (MC 1.20+) -->
+        <UButton
+          v-if="instanceSupportsQuickPlay"
+          icon="i-lucide-play"
+          size="xs"
+          color="neutral"
+          variant="ghost"
+          :disabled="isRunning"
+          :title="$t('quickPlay.playWorld')"
+          square
+          @click="quickPlayWorld(w.folder)"
+        />
       </div>
     </div>
 
@@ -159,23 +171,67 @@
         class="flex items-center gap-3 rounded-xl border border-default bg-white/3 p-3"
         :class="{ 'opacity-55': s.hidden }"
       >
-        <img v-if="s.icon" :src="s.icon" class="size-11 shrink-0 rounded-lg object-cover [image-rendering:pixelated]" :alt="s.name" >
-        <div v-else class="flex size-11 shrink-0 items-center justify-center rounded-lg bg-white/5">
-          <UIcon name="i-lucide-server" class="size-5 text-neutral-500" />
+        <!-- Favicon: from ping result > server NBT > placeholder -->
+        <div class="relative size-11 shrink-0">
+          <img
+            v-if="pingFor(s.ip)?.favicon || s.icon"
+            :src="pingFor(s.ip)?.favicon ?? s.icon ?? ''"
+            class="size-11 rounded-lg object-cover [image-rendering:pixelated]"
+            :alt="s.name"
+          />
+          <div v-else class="flex size-11 items-center justify-center rounded-lg bg-white/5">
+            <UIcon name="i-lucide-server" class="size-5 text-neutral-500" />
+          </div>
         </div>
+
+        <!-- Info -->
         <div class="min-w-0 flex-1">
-          <div class="truncate font-medium">{{ s.name || s.ip }}</div>
-          <div class="truncate font-mono text-[11px] text-neutral-500">{{ s.ip }}</div>
+          <div class="flex items-center gap-2">
+            <span class="truncate font-medium">{{ s.name || s.ip }}</span>
+            <UBadge v-if="s.hidden" color="neutral" variant="subtle" size="xs" :label="$t('content.hidden')" />
+          </div>
+          <!-- MOTD from ping -->
+          <div v-if="pingFor(s.ip)?.motd" class="mt-0.5 truncate text-[11px] text-neutral-400" :title="pingFor(s.ip)!.motd">
+            {{ pingFor(s.ip)!.motd }}
+          </div>
+          <div v-else class="truncate font-mono text-[11px] text-neutral-500">{{ s.ip }}</div>
         </div>
-        <UBadge v-if="s.hidden" color="neutral" variant="subtle" size="xs" :label="$t('content.hidden')" />
-        <UButton
-          icon="i-lucide-trash-2"
-          color="error"
-          variant="ghost"
-          size="xs"
-          :title="$t('common.remove')"
-          @click="removeServer(i)"
-        />
+
+        <!-- Ping status (right side) -->
+        <div class="flex shrink-0 items-center gap-2">
+          <!-- Loading -->
+          <UIcon v-if="pingStatus(s.ip) === 'loading'" name="i-lucide-loader-circle" class="size-3.5 animate-spin text-neutral-500" />
+          <!-- Online -->
+          <template v-else-if="pingFor(s.ip)">
+            <span :class="latencyClass(pingFor(s.ip)!.latency_ms)" class="font-mono text-[11px]">{{ pingFor(s.ip)!.latency_ms }}ms</span>
+            <span class="text-[11px] text-neutral-500">{{ pingFor(s.ip)!.online }}/{{ pingFor(s.ip)!.max }}</span>
+          </template>
+          <!-- Offline -->
+          <span v-else-if="pingStatus(s.ip) === 'offline'" class="text-[11px] text-neutral-600">{{ $t('server.offline') }}</span>
+        </div>
+
+        <!-- Actions -->
+        <div class="flex shrink-0 items-center gap-1">
+          <UButton
+            v-if="instanceSupportsQuickPlay"
+            icon="i-lucide-play"
+            size="xs"
+            color="primary"
+            variant="ghost"
+            :disabled="isRunning"
+            :title="$t('quickPlay.connectServer')"
+            square
+            @click="quickPlayServer(s.ip)"
+          />
+          <UButton
+            icon="i-lucide-trash-2"
+            color="error"
+            variant="ghost"
+            size="xs"
+            :title="$t('common.remove')"
+            @click="removeServer(i)"
+          />
+        </div>
       </div>
     </div>
 
@@ -241,12 +297,15 @@
 <script setup lang="ts">
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
 import { save } from '@tauri-apps/plugin-dialog'
-import type { ScreenshotInfo, WorldInfo, PackInfo, ShaderInfo, ServerInfo } from '~/types/launcher'
+import type { ScreenshotInfo, WorldInfo, PackInfo, ShaderInfo, ServerInfo, PingResult } from '~/types/launcher'
 import type { ContentKind } from '~/types/modrinth'
 
 type ContentTab = 'screenshots' | 'worlds' | 'resourcepacks' | 'datapacks' | 'shaders' | 'servers'
 
 const props = defineProps<{ instanceId: string; tab: ContentTab }>()
+const emit = defineEmits<{
+  quickPlay: [payload: { kind: 'Singleplayer'; world: string } | { kind: 'Multiplayer'; host: string }]
+}>()
 const { t } = useI18n()
 const browser = useModrinthBrowser()
 const instances = useInstancesStore()
@@ -301,7 +360,12 @@ async function load() {
       case 'resourcepacks':
       case 'datapacks': packs.value = result as PackInfo[]; break
       case 'shaders': shaders.value = result as ShaderInfo[]; break
-      case 'servers': servers.value = result as ServerInfo[]; break
+      case 'servers':
+        servers.value = result as ServerInfo[]
+        // Reset pings for the new server list and start pinging.
+        pings.value = {}
+        pingAll()
+        break
     }
   } catch (e) {
     error.value = String(e)
@@ -313,11 +377,67 @@ async function load() {
 const assetUrl = (path: string) => convertFileSrc(path)
 const formatDate = (ms: number) => new Date(ms).toLocaleDateString()
 
+// --- Quick Play helpers ---
+const instance = computed(() => instances.instances.find(i => i.id === props.instanceId))
+
+/** MC 1.20+ supports --quickPlay* args */
+function supportsQuickPlay(ver: string): boolean {
+  const [, minorStr = '0'] = ver.split('.')
+  return parseInt(minorStr) >= 20
+}
+const instanceSupportsQuickPlay = computed(() =>
+  !!instance.value && supportsQuickPlay(instance.value.mc_version),
+)
+
+// Whether the instance is currently running (disables quick play buttons).
+const mc = useMinecraftLaunch(computed(() => props.instanceId))
+const isRunning = computed(() => mc.stage.value !== 'idle')
+
+function quickPlayWorld(folder: string) {
+  emit('quickPlay', { kind: 'Singleplayer', world: folder })
+}
+function quickPlayServer(ip: string) {
+  const [host] = ip.split(':')
+  emit('quickPlay', { kind: 'Multiplayer', host: host ?? ip })
+}
+
 // --- servers: add / remove ---
 const toast = useToast()
 const addServerOpen = ref(false)
 const addingServer = ref(false)
 const newServer = reactive({ name: '', ip: '' })
+
+// --- server pings ---
+type PingStatus = PingResult | 'loading' | 'offline'
+const pings = ref<Record<string, PingStatus>>({})
+
+function pingFor(ip: string): PingResult | null {
+  const v = pings.value[ip]
+  return v && typeof v === 'object' ? v : null
+}
+function pingStatus(ip: string): 'loading' | 'online' | 'offline' | null {
+  const v = pings.value[ip]
+  if (!v) return null
+  if (v === 'loading') return 'loading'
+  if (v === 'offline') return 'offline'
+  return 'online'
+}
+
+function latencyClass(ms: number): string {
+  if (ms < 80) return 'text-emerald-400'
+  if (ms < 200) return 'text-yellow-400'
+  return 'text-red-400'
+}
+
+async function pingAll() {
+  for (const s of servers.value) {
+    if (pings.value[s.ip] === 'loading') continue
+    pings.value = { ...pings.value, [s.ip]: 'loading' }
+    invoke<PingResult>('ping_server', { host: s.ip.split(':')[0], port: s.ip.includes(':') ? Number(s.ip.split(':')[1]) : null })
+      .then(result => { pings.value = { ...pings.value, [s.ip]: result } })
+      .catch(() => { pings.value = { ...pings.value, [s.ip]: 'offline' } })
+  }
+}
 
 async function addServer() {
   if (!newServer.ip.trim()) return
@@ -411,13 +531,12 @@ const installKind = computed(() => INSTALL_KINDS[props.tab] ?? null)
 
 function openAdd() {
   if (!installKind.value) return
-  const instance = instances.instances.find(i => i.id === props.instanceId)
   browser.open({
     kind: installKind.value,
     mode: 'install',
     instanceId: props.instanceId,
-    gameVersion: instance?.mc_version,
-    loader: instance?.loader.type,
+    gameVersion: instance.value?.mc_version,
+    loader: instance.value?.loader.type,
     onInstalled: () => load(),
   })
 }
