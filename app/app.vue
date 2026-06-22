@@ -3,7 +3,7 @@
     <!-- Titlebar -->
     <div data-tauri-drag-region class="z-10 flex w-full justify-between items-center h-10 px-2 text-gray-100 select-none">
       <div class="flex items-center gap-2 pl-2">
-        <img src="/logo.png" alt="Mako Launcher Icon" class="w-5 h-5 rounded-sm" />
+        <img src="/logo-transparent.png" alt="Mako Launcher Icon" class="w-5 h-5 rounded-sm" />
         <span>Mako Launcher</span>
       </div>
       <div class="flex items-center gap-4">

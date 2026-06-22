@@ -224,7 +224,7 @@
       </div>
 
       <div class="absolute left-0 bottom-0 flex gap-2 items-center">
-        <img src="/logo.png" alt="Mako Launcher Icon" class="w-8 h-8 rounded-sm" />
+        <img src="/logo-transparent.png" alt="Mako Launcher Icon" class="w-8 h-8 rounded-sm" />
         <div>
           <p>Mako Launcher v{{ version }}</p>
           <p class="text-xs text-muted">Made with by <a href="https://github.com/MakotoPD" target="_blank" rel="noopener noreferrer">MakotoPD</a></p>
