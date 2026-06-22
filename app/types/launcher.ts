@@ -1,0 +1,165 @@
+// Mirrors the serde types in src-tauri/src/models.rs.
+
+export type LoaderType = 'vanilla' | 'fabric' | 'quilt' | 'forge' | 'neoforge'
+
+// serde tag = "type", content = "version". Vanilla has no version.
+export type Loader =
+  | { type: 'vanilla' }
+  | { type: 'fabric'; version: string }
+  | { type: 'quilt'; version: string }
+  | { type: 'forge'; version: string }
+  | { type: 'neoforge'; version: string }
+
+export interface Instance {
+  id: string
+  name: string
+  mc_version: string
+  loader: Loader
+  memory_mb?: number | null
+  java_args: string[]
+  icon?: string | null
+  group?: string | null
+  created_at: string
+  last_played?: string | null
+  playtime_seconds: number
+
+  // per-instance launch overrides
+  override_memory: boolean
+  override_window: boolean
+  fullscreen: boolean
+  width?: number
+  height?: number
+  override_java_args: boolean
+  override_java: boolean
+  java_path?: string
+  override_env: boolean
+  env_vars: EnvVar[]
+  override_hooks: boolean
+  pre_launch?: string
+  wrapper?: string
+  post_exit?: string
+}
+
+export interface EnvVar {
+  key: string
+  value: string
+}
+
+export type AccountKind = 'microsoft' | 'offline'
+
+export interface Account {
+  kind: AccountKind
+  uuid: string
+  username: string
+  xuid: string
+  access_token: string
+  refresh_token: string
+  exp: number
+  client_id: string
+}
+
+export interface AccountsFile {
+  accounts: Account[]
+  active_uuid?: string | null
+}
+
+export interface Settings {
+  default_memory_mb: number
+  last_instance_id?: string | null
+  theme: string
+  default_fullscreen: boolean
+  default_width?: number
+  default_height?: number
+  default_java_path?: string
+  default_java_args: string[]
+  default_env_vars: EnvVar[]
+  default_pre_launch?: string
+  default_wrapper?: string
+  default_post_exit?: string
+  track_playtime: boolean
+  discord_rpc: boolean
+  crash_reports: boolean
+  anonymous_stats: boolean
+}
+
+export interface SavedSkin {
+  id: string
+  name: string
+  model: 'classic' | 'slim'
+  active: boolean
+  created_at: string
+}
+
+// The logged-in player's current skin (mirrors PlayerSkin in skins.rs).
+export interface PlayerSkin {
+  skin: string // data: URL
+  slim: boolean
+}
+
+export interface LauncherPaths {
+  data_root: string
+  instances: string
+  runtimes: string
+  skins: string
+  cache: string
+  logs: string
+}
+
+// Payloads emitted from the Rust launch/install flow. All carry the instance_id
+// they belong to so concurrent activity can be attributed.
+export interface MultiProgress { instance_id: string; current: number; total: number }
+export interface FileProgress { instance_id: string; path: string; current: number; total: number }
+export interface ConsoleLine { instance_id: string; line: string }
+export interface ExitInfo { instance_id: string; code: number | null }
+
+// Instance content (instance page tabs), mirrors src-tauri/src/commands/content.rs.
+export interface ScreenshotInfo { name: string; path: string; modified: number }
+export interface WorldInfo {
+  folder: string
+  name: string
+  icon_path: string | null
+  last_played: number | null
+  version: string | null
+  game_mode: string | null
+}
+export interface PackInfo {
+  name: string
+  filename: string
+  description: string | null
+  pack_format: number | null
+  icon: string | null
+  is_zip: boolean
+}
+export interface ShaderInfo { name: string; filename: string; is_zip: boolean }
+export interface ServerInfo { name: string; ip: string; icon: string | null; hidden: boolean }
+// An instance discovered in another launcher's data dir (import.rs).
+export interface ExternalInstance {
+  launcher: 'prism' | 'curseforge' | 'modrinth'
+  name: string
+  path: string
+  game_dir: string
+  mc_version: string | null
+  loader: string | null
+  loader_version: string | null
+}
+
+export interface LogFile {
+  name: string
+  kind: 'latest' | 'log' | 'archived' | 'crash'
+  rel: string
+  modified: number
+  size: number
+}
+
+// A mod in an instance's mods/ folder (mirrors ModEntry in mods.rs).
+export interface ModEntry {
+  filename: string
+  enabled: boolean
+  name: string | null
+  version: string | null
+  version_id: string | null
+  icon_url: string | null
+  project_id: string | null
+  provider: 'local' | 'modrinth' | 'curseforge'
+  modified: number
+}

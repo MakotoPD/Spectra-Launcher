@@ -1,0 +1,1084 @@
+//! Modrinth (https://modrinth.com) integration: search, version listing and
+//! downloading content into instances. Used by the in-app Modrinth browser to
+//! add mods/shaders/datapacks/resourcepacks to an instance, and to create an
+//! instance from a modpack (`.mrpack`).
+//!
+//! Modrinth API v2: https://docs.modrinth.com/api/. All HTTP goes through Rust
+//! (reqwest) so we can set a proper User-Agent and avoid CORS. Note: on Modrinth
+//! loaders are part of the `categories` facet, and datapacks are
+//! `project_type:mod` with `categories:datapack`.
+
+use std::collections::HashMap;
+use std::io::{Cursor, Read};
+use std::path::{Component, Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter};
+
+use crate::commands::instances;
+use crate::models::{Instance, Loader};
+use crate::{paths, store};
+
+const API: &str = "https://api.modrinth.com/v2";
+const USER_AGENT: &str = "MakotoPD/Mako-Launcher/0.1.0 (mako launcher)";
+
+/// One shared client reused for every request, so connections are pooled instead
+/// of opening a fresh client (and TLS handshake) per call. Cloning is cheap — a
+/// `reqwest::Client` is an `Arc` internally.
+fn http() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .user_agent(USER_AGENT)
+                .build()
+                .expect("build reqwest client")
+        })
+        .clone()
+}
+
+/// Back-compat for the existing `client()?` call sites.
+fn client() -> Result<reqwest::Client, String> {
+    Ok(http())
+}
+
+/// Bounds how many Modrinth requests are in flight at once so parallel callers
+/// (update checks, installed-state probes, dependency resolution, …) never burst
+/// past the API rate limit (~300/min). 6 keeps things responsive without 429s.
+fn rate_gate() -> &'static tokio::sync::Semaphore {
+    static SEM: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    SEM.get_or_init(|| tokio::sync::Semaphore::new(6))
+}
+
+/// Sends a request through the concurrency gate, transparently retrying on HTTP
+/// 429 (rate limited). Honors the server's `Retry-After` header when present,
+/// otherwise backs off exponentially (1,2,4,8,16s, capped at 15s).
+async fn send(req: reqwest::RequestBuilder) -> Result<reqwest::Response, String> {
+    let _permit = rate_gate().acquire().await.map_err(|e| e.to_string())?;
+    let mut attempt: u32 = 0;
+    loop {
+        let attempt_req = req.try_clone().ok_or("request is not retryable")?;
+        let resp = attempt_req.send().await.map_err(|e| e.to_string())?;
+        if resp.status().as_u16() != 429 || attempt >= 5 {
+            return Ok(resp);
+        }
+        let retry_after = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<u64>().ok());
+        let wait = retry_after.unwrap_or_else(|| (1u64 << attempt).min(15)).clamp(1, 15);
+        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+        attempt += 1;
+    }
+}
+
+// ===== Search =====
+
+#[derive(Deserialize)]
+pub struct SearchParams {
+    query: String,
+    /// "mod" | "modpack" | "resourcepack" | "shader"
+    project_type: String,
+    #[serde(default)]
+    loaders: Vec<String>,
+    #[serde(default)]
+    game_versions: Vec<String>,
+    /// Extra category facets (e.g. "datapack", genres). Each is AND-ed.
+    #[serde(default)]
+    categories: Vec<String>,
+    /// "relevance" | "downloads" | "follows" | "newest" | "updated"
+    #[serde(default = "default_index")]
+    index: String,
+    #[serde(default)]
+    offset: u32,
+    #[serde(default = "default_limit")]
+    limit: u32,
+}
+
+fn default_index() -> String {
+    "relevance".to_string()
+}
+fn default_limit() -> u32 {
+    20
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SearchHit {
+    pub project_id: String,
+    pub slug: String,
+    pub title: String,
+    pub description: String,
+    pub author: String,
+    pub project_type: String,
+    pub downloads: u64,
+    pub follows: u64,
+    pub icon_url: Option<String>,
+    pub categories: Vec<String>,
+    pub versions: Vec<String>,
+    pub client_side: Option<String>,
+    pub server_side: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct SearchResponse {
+    pub hits: Vec<SearchHit>,
+    pub total_hits: u64,
+    pub offset: u64,
+    pub limit: u64,
+}
+
+#[tauri::command]
+pub async fn modrinth_search(params: SearchParams) -> Result<SearchResponse, String> {
+    // facets: AND between arrays, OR within an array.
+    let mut facets: Vec<Vec<String>> = vec![vec![format!("project_type:{}", params.project_type)]];
+
+    if !params.loaders.is_empty() {
+        facets.push(params.loaders.iter().map(|l| format!("categories:{l}")).collect());
+    }
+    for c in &params.categories {
+        facets.push(vec![format!("categories:{c}")]);
+    }
+    if !params.game_versions.is_empty() {
+        facets.push(params.game_versions.iter().map(|v| format!("versions:{v}")).collect());
+    }
+
+    let facets_json = serde_json::to_string(&facets).map_err(|e| e.to_string())?;
+
+    let resp = send(http().get(format!("{API}/search")).query(&[
+        ("query", params.query.as_str()),
+        ("facets", facets_json.as_str()),
+        ("index", params.index.as_str()),
+        ("offset", &params.offset.to_string()),
+        ("limit", &params.limit.to_string()),
+    ]))
+    .await?;
+
+    if !resp.status().is_success() {
+        return Err(format!("Modrinth search failed: {}", resp.status()));
+    }
+    resp.json::<SearchResponse>().await.map_err(|e| e.to_string())
+}
+
+// ===== Versions =====
+
+#[derive(Serialize, Deserialize)]
+pub struct VersionFileHashes {
+    pub sha1: Option<String>,
+    pub sha512: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct VersionFile {
+    pub url: String,
+    pub filename: String,
+    pub primary: bool,
+    pub size: u64,
+    pub hashes: VersionFileHashes,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Dependency {
+    pub project_id: Option<String>,
+    pub version_id: Option<String>,
+    pub dependency_type: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Version {
+    pub id: String,
+    #[serde(default)]
+    pub project_id: String,
+    pub name: String,
+    pub version_number: String,
+    pub version_type: String,
+    pub loaders: Vec<String>,
+    pub game_versions: Vec<String>,
+    pub downloads: u64,
+    pub date_published: String,
+    #[serde(default)]
+    pub changelog: Option<String>,
+    pub files: Vec<VersionFile>,
+    #[serde(default)]
+    pub dependencies: Vec<Dependency>,
+}
+
+#[tauri::command]
+pub async fn modrinth_versions(
+    project_id: String,
+    loaders: Option<Vec<String>>,
+    game_versions: Option<Vec<String>>,
+) -> Result<Vec<Version>, String> {
+    let mut req = http().get(format!("{API}/project/{project_id}/version"));
+    if let Some(l) = loaders.filter(|l| !l.is_empty()) {
+        req = req.query(&[("loaders", serde_json::to_string(&l).map_err(|e| e.to_string())?)]);
+    }
+    if let Some(g) = game_versions.filter(|g| !g.is_empty()) {
+        req = req.query(&[("game_versions", serde_json::to_string(&g).map_err(|e| e.to_string())?)]);
+    }
+
+    let resp = send(req).await?;
+    if !resp.status().is_success() {
+        return Err(format!("Modrinth versions failed: {}", resp.status()));
+    }
+    resp.json::<Vec<Version>>().await.map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+pub struct ModUpdate {
+    project_id: String,
+    /// Latest compatible version id (newer than what's installed).
+    version_id: String,
+    version_number: String,
+}
+
+/// For each installed mod (from the content index), checks Modrinth for a newer
+/// compatible version. Returns only the ones that have an update available.
+#[tauri::command]
+pub async fn check_mod_updates(
+    instance_id: String,
+    loaders: Option<Vec<String>>,
+    game_versions: Option<Vec<String>>,
+) -> Result<Vec<ModUpdate>, String> {
+    let http = http();
+    let index = read_content_index(&instance_id);
+    let mut out = Vec::new();
+
+    for item in index.items.iter().filter(|i| i.kind == "mod") {
+        let mut req = http.get(format!("{API}/project/{}/version", item.project_id));
+        if let Some(l) = loaders.as_ref().filter(|l| !l.is_empty()) {
+            if let Ok(j) = serde_json::to_string(l) {
+                req = req.query(&[("loaders", j)]);
+            }
+        }
+        if let Some(g) = game_versions.as_ref().filter(|g| !g.is_empty()) {
+            if let Ok(j) = serde_json::to_string(g) {
+                req = req.query(&[("game_versions", j)]);
+            }
+        }
+        let Ok(resp) = send(req).await else { continue };
+        if !resp.status().is_success() {
+            continue;
+        }
+        let Ok(versions) = resp.json::<Vec<Version>>().await else { continue };
+        if let Some(latest) = versions.into_iter().next() {
+            if latest.id != item.version_id {
+                out.push(ModUpdate {
+                    project_id: item.project_id.clone(),
+                    version_id: latest.id,
+                    version_number: latest.version_number,
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+// ===== Categories (for filter chips) =====
+
+#[derive(Deserialize)]
+struct RawCategory {
+    name: String,
+    project_type: String,
+    header: String,
+}
+
+#[derive(Serialize)]
+pub struct Category {
+    pub name: String,
+    pub header: String,
+}
+
+#[tauri::command]
+pub async fn modrinth_categories(project_type: String) -> Result<Vec<Category>, String> {
+    let resp = send(http().get(format!("{API}/tag/category"))).await?;
+    let all: Vec<RawCategory> = resp.json().await.map_err(|e| e.to_string())?;
+    Ok(all
+        .into_iter()
+        .filter(|c| c.project_type == project_type)
+        .map(|c| Category { name: c.name, header: c.header })
+        .collect())
+}
+
+// ===== Installed-content index (instances/<id>/content.json) =====
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct InstalledItem {
+    pub project_id: String,
+    pub version_id: String,
+    /// "mod" | "shader" | "datapack" | "resourcepack"
+    pub kind: String,
+    pub name: String,
+    pub filename: String,
+    pub version_number: String,
+    pub icon_url: Option<String>,
+    pub game_versions: Vec<String>,
+    pub loaders: Vec<String>,
+    /// Was this auto-installed as a dependency of another project?
+    pub dependency: bool,
+    pub installed_at: String,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+struct ContentIndex {
+    items: Vec<InstalledItem>,
+}
+
+fn read_content_index(instance_id: &str) -> ContentIndex {
+    store::read_json(&paths::instance_content_index(instance_id))
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
+fn write_content_index(instance_id: &str, index: &ContentIndex) -> Result<(), String> {
+    store::write_json(&paths::instance_content_index(instance_id), index)
+}
+
+/// The content currently recorded as installed in an instance.
+#[tauri::command]
+pub fn get_installed_content(instance_id: String) -> Result<Vec<InstalledItem>, String> {
+    Ok(read_content_index(&instance_id).items)
+}
+
+/// Plain accessor for other command modules (e.g. mod management).
+pub fn installed_items(instance_id: &str) -> Vec<InstalledItem> {
+    read_content_index(instance_id).items
+}
+
+/// Drops any content-index entry whose file matches `filename`.
+pub fn remove_index_entry(instance_id: &str, filename: &str) {
+    let mut index = read_content_index(instance_id);
+    let before = index.items.len();
+    index.items.retain(|i| i.filename != filename);
+    if index.items.len() != before {
+        let _ = write_content_index(instance_id, &index);
+    }
+}
+
+// ===== Full project (with markdown body) =====
+
+#[derive(Serialize, Deserialize)]
+pub struct GalleryItem {
+    /// Optimized (smaller) image — good for thumbnails.
+    pub url: String,
+    /// Full-resolution original — used in the lightbox.
+    #[serde(default)]
+    pub raw_url: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub featured: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ProjectFull {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    /// Long markdown description.
+    #[serde(default)]
+    pub body: String,
+    pub icon_url: Option<String>,
+    #[serde(default)]
+    pub gallery: Vec<GalleryItem>,
+}
+
+#[tauri::command]
+pub async fn modrinth_project(id: String) -> Result<ProjectFull, String> {
+    let resp = send(http().get(format!("{API}/project/{id}"))).await?;
+    if !resp.status().is_success() {
+        return Err(format!("Modrinth project failed: {}", resp.status()));
+    }
+    resp.json::<ProjectFull>().await.map_err(|e| e.to_string())
+}
+
+// ===== Project info (for folder + index metadata) =====
+
+#[derive(Deserialize)]
+struct ProjectInfo {
+    #[serde(default)]
+    id: String,
+    title: String,
+    icon_url: Option<String>,
+    project_type: String,
+    #[serde(default)]
+    categories: Vec<String>,
+}
+
+/// The content kind + target folder for a project's version.
+fn kind_and_folder(version: &Version, project: &ProjectInfo) -> (&'static str, &'static str) {
+    match project.project_type.as_str() {
+        "resourcepack" => ("resourcepack", "resourcepacks"),
+        "shader" => ("shader", "shaderpacks"),
+        _ => {
+            let is_datapack =
+                version.loaders.iter().any(|l| l == "datapack") || project.categories.iter().any(|c| c == "datapack");
+            if is_datapack {
+                ("datapack", "datapacks")
+            } else {
+                ("mod", "mods")
+            }
+        }
+    }
+}
+
+async fn fetch_version(http: &reqwest::Client, version_id: &str) -> Result<Version, String> {
+    let resp = send(http.get(format!("{API}/version/{version_id}"))).await?;
+    if !resp.status().is_success() {
+        return Err(format!("version {version_id} failed: {}", resp.status()));
+    }
+    resp.json::<Version>().await.map_err(|e| e.to_string())
+}
+
+async fn fetch_project(http: &reqwest::Client, project_id: &str) -> Result<ProjectInfo, String> {
+    let resp = send(http.get(format!("{API}/project/{project_id}"))).await?;
+    if !resp.status().is_success() {
+        return Err(format!("project {project_id} failed: {}", resp.status()));
+    }
+    resp.json::<ProjectInfo>().await.map_err(|e| e.to_string())
+}
+
+/// Newest version id for a project compatible with the given loader/game version.
+async fn resolve_latest_version(
+    http: &reqwest::Client,
+    project_id: &str,
+    loader: &Option<String>,
+    game_version: &Option<String>,
+) -> Result<Option<String>, String> {
+    let mut req = http.get(format!("{API}/project/{project_id}/version"));
+    if let Some(l) = loader.as_ref().filter(|l| !l.is_empty()) {
+        req = req.query(&[("loaders", serde_json::to_string(&[l]).map_err(|e| e.to_string())?)]);
+    }
+    if let Some(g) = game_version.as_ref().filter(|g| !g.is_empty()) {
+        req = req.query(&[("game_versions", serde_json::to_string(&[g]).map_err(|e| e.to_string())?)]);
+    }
+    let list: Vec<Version> = send(req).await?.json().await.map_err(|e| e.to_string())?;
+    Ok(list.into_iter().next().map(|v| v.id))
+}
+
+/// Installs a version and (recursively) its required dependencies. Records each
+/// in the content index. Returns only the newly-added items.
+#[tauri::command]
+pub async fn modrinth_install_with_deps(
+    instance_id: String,
+    version_id: String,
+    game_version: Option<String>,
+    loader: Option<String>,
+) -> Result<Vec<InstalledItem>, String> {
+    let http = client()?;
+    let mut index = read_content_index(&instance_id);
+    let mut visited: std::collections::HashSet<String> =
+        index.items.iter().map(|i| i.project_id.clone()).collect();
+    let mut added: Vec<InstalledItem> = Vec::new();
+
+    install_rec(&http, &instance_id, &version_id, false, &game_version, &loader, &mut visited, &mut index, &mut added)
+        .await?;
+
+    write_content_index(&instance_id, &index)?;
+    Ok(added)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn install_rec<'a>(
+    http: &'a reqwest::Client,
+    instance_id: &'a str,
+    version_id: &'a str,
+    is_dependency: bool,
+    game_version: &'a Option<String>,
+    loader: &'a Option<String>,
+    visited: &'a mut std::collections::HashSet<String>,
+    index: &'a mut ContentIndex,
+    added: &'a mut Vec<InstalledItem>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+    Box::pin(async move {
+        let version = fetch_version(http, version_id).await?;
+        // Skip only *dependencies* that are already present. The explicitly
+        // requested top-level version must always (re)install, even when the mod
+        // is already installed — that's exactly the update / change-version case.
+        if is_dependency && visited.contains(&version.project_id) {
+            return Ok(());
+        }
+        let project = fetch_project(http, &version.project_id).await?;
+        let (kind, folder) = kind_and_folder(&version, &project);
+
+        let Some(file) = version.files.iter().find(|f| f.primary).or_else(|| version.files.first()) else {
+            return Ok(());
+        };
+
+        let dir = paths::instance_game_dir(instance_id).join(folder);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create {folder}: {e}"))?;
+        let bytes = download(http, &file.url).await?;
+        std::fs::write(dir.join(safe_name(&file.filename)), &bytes).map_err(|e| format!("write file: {e}"))?;
+
+        visited.insert(version.project_id.clone());
+        let item = InstalledItem {
+            project_id: version.project_id.clone(),
+            version_id: version.id.clone(),
+            kind: kind.to_string(),
+            name: project.title.clone(),
+            filename: file.filename.clone(),
+            version_number: version.version_number.clone(),
+            icon_url: project.icon_url.clone(),
+            game_versions: version.game_versions.clone(),
+            loaders: version.loaders.clone(),
+            dependency: is_dependency,
+            installed_at: chrono::Utc::now().to_rfc3339(),
+        };
+        // Replace any existing record for this project, then add.
+        index.items.retain(|i| i.project_id != item.project_id);
+        index.items.push(item.clone());
+        added.push(item);
+
+        // Required dependencies.
+        for dep in version.dependencies.iter().filter(|d| d.dependency_type == "required") {
+            let dep_version_id = if let Some(vid) = &dep.version_id {
+                Some(vid.clone())
+            } else if let Some(pid) = &dep.project_id {
+                resolve_latest_version(http, pid, loader, game_version).await?
+            } else {
+                None
+            };
+            if let Some(dvid) = dep_version_id {
+                install_rec(http, instance_id, &dvid, true, game_version, loader, visited, index, added).await?;
+            }
+        }
+        Ok(())
+    })
+}
+
+// ===== Install a modpack (.mrpack) as a new instance =====
+
+#[derive(Deserialize)]
+struct MrIndex {
+    name: String,
+    files: Vec<MrFile>,
+    #[serde(default)]
+    dependencies: HashMap<String, String>,
+}
+
+#[derive(Deserialize)]
+struct MrFile {
+    path: String,
+    downloads: Vec<String>,
+    #[serde(default)]
+    hashes: Option<MrHashes>,
+    #[serde(default)]
+    env: Option<MrEnv>,
+}
+
+#[derive(Deserialize)]
+struct MrHashes {
+    #[serde(default)]
+    sha1: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct MrEnv {
+    #[serde(default)]
+    client: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct ModpackProgress {
+    current: u64,
+    total: u64,
+    name: String,
+}
+
+/// Downloads a `.mrpack`, parses it, creates a new instance and downloads all of
+/// its files + overrides. Emits `modrinth://modpack-progress` while downloading.
+#[tauri::command]
+pub async fn modrinth_install_modpack(
+    app: AppHandle,
+    url: String,
+    name_override: Option<String>,
+    // `icon_url` is the modpack project's icon, downloaded and used as the instance icon.
+    icon_url: Option<String>,
+    project_id: Option<String>,
+    version_id: Option<String>,
+) -> Result<Instance, String> {
+    let http = client()?;
+    let pack_bytes = download(&http, &url).await?;
+    let (raw_index, index) = parse_mrpack(&pack_bytes)?;
+
+    let mc_version = index
+        .dependencies
+        .get("minecraft")
+        .cloned()
+        .ok_or("modpack has no Minecraft version")?;
+    let loader = loader_from_deps(&index.dependencies);
+
+    let name = name_override
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| index.name.clone());
+
+    let mut instance = instances::create_instance(name, mc_version, loader, None, None)?;
+
+    // Download + apply the modpack's icon, if any.
+    if let Some(icon) = icon_url.filter(|u| !u.trim().is_empty()) {
+        if let Ok(bytes) = download(&http, &icon).await {
+            if std::fs::write(paths::instance_icon_file(&instance.id), &bytes).is_ok() {
+                instance.icon = Some("icon.png".to_string());
+            }
+        }
+    }
+    // Remember the pack identity for update checks.
+    instance.modpack_project_id = project_id;
+    instance.modpack_version_id = version_id;
+    let _ = store::write_json(&paths::instance_config_file(&instance.id), &instance);
+
+    apply_mrpack_files(&app, &http, &instance.id, &pack_bytes, &index, &raw_index, &instance.name).await?;
+    Ok(instance)
+}
+
+/// Imports a modpack from a local file (`.mrpack`, or a `.zip` that is actually
+/// a Modrinth pack). The pack's mod files are still fetched from their CDN URLs;
+/// only the archive (overrides + index) comes from disk. CurseForge `.zip`s are
+/// detected and rejected with a pointer to the launcher-import path.
+#[tauri::command]
+pub async fn import_modpack_file(
+    app: AppHandle,
+    path: String,
+    name_override: Option<String>,
+) -> Result<Instance, String> {
+    let pack_bytes = std::fs::read(&path).map_err(|e| format!("read file: {e}"))?;
+
+    if let Ok((raw_index, index)) = parse_mrpack(&pack_bytes) {
+        let mc_version = index
+            .dependencies
+            .get("minecraft")
+            .cloned()
+            .ok_or("modpack has no Minecraft version")?;
+        let loader = loader_from_deps(&index.dependencies);
+        let name = name_override
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| index.name.clone());
+        let http = client()?;
+        let instance = instances::create_instance(name, mc_version, loader, None, None)?;
+        apply_mrpack_files(&app, &http, &instance.id, &pack_bytes, &index, &raw_index, &instance.name).await?;
+        return Ok(instance);
+    }
+
+    if zip_has_curseforge_manifest(&pack_bytes) {
+        return Err("This is a CurseForge modpack. Import the installed instance from the CurseForge app instead (Import → from a launcher).".into());
+    }
+
+    Err("Unrecognized file — expected a Modrinth .mrpack.".into())
+}
+
+/// True if a zip carries a CurseForge `manifest.json` (their modpack format).
+fn zip_has_curseforge_manifest(pack_bytes: &[u8]) -> bool {
+    let Ok(mut archive) = zip::ZipArchive::new(Cursor::new(pack_bytes)) else { return false };
+    let Ok(mut f) = archive.by_name("manifest.json") else { return false };
+    let mut s = String::new();
+    f.read_to_string(&mut s).is_ok() && (s.contains("minecraftModpack") || s.contains("\"manifestType\""))
+}
+
+/// Reads `modrinth.index.json` (raw + parsed) from a `.mrpack`.
+fn parse_mrpack(pack_bytes: &[u8]) -> Result<(String, MrIndex), String> {
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(pack_bytes)).map_err(|e| format!("open mrpack: {e}"))?;
+    let mut f = archive
+        .by_name("modrinth.index.json")
+        .map_err(|_| "mrpack missing modrinth.index.json".to_string())?;
+    let mut raw = String::new();
+    f.read_to_string(&mut raw).map_err(|e| e.to_string())?;
+    let index: MrIndex = serde_json::from_str(&raw).map_err(|e| format!("parse index: {e}"))?;
+    Ok((raw, index))
+}
+
+/// Downloads a pack's declared files + overrides into an instance's game dir,
+/// persists the manifest and indexes the content. Used for install and update.
+async fn apply_mrpack_files(
+    app: &AppHandle,
+    http: &reqwest::Client,
+    instance_id: &str,
+    pack_bytes: &Vec<u8>,
+    index: &MrIndex,
+    raw_index: &str,
+    name: &str,
+) -> Result<(), String> {
+    let game_dir = paths::instance_game_dir(instance_id);
+
+    let downloadable: Vec<&MrFile> = index
+        .files
+        .iter()
+        .filter(|f| f.env.as_ref().and_then(|e| e.client.as_deref()) != Some("unsupported"))
+        .collect();
+    let total = downloadable.len() as u64;
+
+    for (i, file) in downloadable.iter().enumerate() {
+        let Some(src) = file.downloads.first() else { continue };
+        let dest = join_safe(&game_dir, &file.path)?;
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let bytes = download(http, src).await?;
+        std::fs::write(&dest, &bytes).map_err(|e| format!("write {}: {e}", file.path))?;
+
+        let _ = app.emit(
+            "modrinth://modpack-progress",
+            ModpackProgress { current: i as u64 + 1, total, name: name.to_string() },
+        );
+    }
+
+    let mut archive =
+        zip::ZipArchive::new(Cursor::new(pack_bytes)).map_err(|e| format!("open mrpack: {e}"))?;
+    extract_overrides(&mut archive, &game_dir)?;
+
+    let _ = std::fs::write(paths::instance_dir(instance_id).join("modrinth.index.json"), raw_index);
+
+    if let Err(e) = index_modpack_content(http, instance_id, &index.files).await {
+        log::warn!("modpack content index failed: {e}");
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+pub struct ModpackUpdate {
+    version_id: String,
+    version_number: String,
+    /// "release" | "beta" (alpha is never proposed).
+    version_type: String,
+    changelog: String,
+    date_published: String,
+}
+
+/// Newest non-alpha modpack version targeting the same Minecraft version as the
+/// pack currently uses. `versions` must be newest-first (Modrinth's default).
+fn pick_modpack_candidate(versions: Vec<Version>, mc_version: &str) -> Option<Version> {
+    versions
+        .into_iter()
+        .filter(|v| v.version_type != "alpha")
+        .find(|v| v.game_versions.iter().any(|g| g == mc_version))
+}
+
+/// Newest compatible modpack version, if newer than the installed one.
+#[tauri::command]
+pub async fn check_modpack_update(instance_id: String) -> Result<Option<ModpackUpdate>, String> {
+    let instance: Instance =
+        store::read_json(&paths::instance_config_file(&instance_id))?.ok_or("instance not found")?;
+    let (Some(pid), Some(current)) = (instance.modpack_project_id, instance.modpack_version_id) else {
+        return Ok(None);
+    };
+
+    let versions: Vec<Version> = send(http().get(format!("{API}/project/{pid}/version")))
+        .await?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let Some(candidate) = pick_modpack_candidate(versions, &instance.mc_version) else {
+        return Ok(None);
+    };
+    if candidate.id == current {
+        return Ok(None);
+    }
+    Ok(Some(ModpackUpdate {
+        version_id: candidate.id,
+        version_number: candidate.version_number,
+        version_type: candidate.version_type,
+        changelog: candidate.changelog.unwrap_or_default(),
+        date_published: candidate.date_published,
+    }))
+}
+
+/// Updates the instance's modpack to its newest version: removes the old pack's
+/// files, downloads + applies the new `.mrpack`, and records the new version id.
+#[tauri::command]
+pub async fn update_modpack(app: AppHandle, instance_id: String) -> Result<(), String> {
+    let mut instance: Instance =
+        store::read_json(&paths::instance_config_file(&instance_id))?.ok_or("instance not found")?;
+    let pid = instance.modpack_project_id.clone().ok_or("not a modpack instance")?;
+
+    let http = http();
+    let versions: Vec<Version> = send(http.get(format!("{API}/project/{pid}/version")))
+        .await?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    let latest = pick_modpack_candidate(versions, &instance.mc_version)
+        .ok_or("no compatible modpack version")?;
+    let file = latest
+        .files
+        .iter()
+        .find(|f| f.primary)
+        .or_else(|| latest.files.first())
+        .ok_or("modpack version has no file")?;
+
+    // Remove the previous pack's declared files so removed mods don't linger.
+    delete_pack_files(&instance_id);
+
+    let pack_bytes = download(&http, &file.url).await?;
+    let (raw_index, index) = parse_mrpack(&pack_bytes)?;
+    apply_mrpack_files(&app, &http, &instance_id, &pack_bytes, &index, &raw_index, &instance.name).await?;
+
+    instance.modpack_version_id = Some(latest.id);
+    store::write_json(&paths::instance_config_file(&instance_id), &instance)?;
+    Ok(())
+}
+
+/// Deletes the files declared in the currently-saved `modrinth.index.json`.
+fn delete_pack_files(instance_id: &str) {
+    let path = paths::instance_dir(instance_id).join("modrinth.index.json");
+    let Ok(raw) = std::fs::read_to_string(&path) else { return };
+    let Ok(index) = serde_json::from_str::<MrIndex>(&raw) else { return };
+    let game_dir = paths::instance_game_dir(instance_id);
+    for f in index.files {
+        if let Ok(dest) = join_safe(&game_dir, &f.path) {
+            let _ = std::fs::remove_file(dest);
+        }
+    }
+}
+
+/// Records a modpack's bundled files in the content index by resolving their
+/// sha1 hashes to Modrinth versions/projects (two bulk requests).
+async fn index_modpack_content(
+    http: &reqwest::Client,
+    instance_id: &str,
+    files: &[MrFile],
+) -> Result<(), String> {
+    // sha1 -> file
+    let mut by_hash: std::collections::HashMap<String, &MrFile> = std::collections::HashMap::new();
+    for f in files {
+        if let Some(h) = f.hashes.as_ref().and_then(|h| h.sha1.clone()) {
+            by_hash.insert(h, f);
+        }
+    }
+    if by_hash.is_empty() {
+        return Ok(());
+    }
+
+    // Bulk-resolve hashes to versions.
+    let hashes: Vec<&String> = by_hash.keys().collect();
+    let resp = send(
+        http.post(format!("{API}/version_files"))
+            .json(&serde_json::json!({ "hashes": hashes, "algorithm": "sha1" })),
+    )
+    .await?;
+    if !resp.status().is_success() {
+        return Err(format!("version_files: {}", resp.status()));
+    }
+    let versions: std::collections::HashMap<String, Version> =
+        resp.json().await.map_err(|e| e.to_string())?;
+
+    // Bulk-fetch the projects (for title/icon).
+    let project_ids: Vec<String> = versions
+        .values()
+        .map(|v| v.project_id.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let ids_json = serde_json::to_string(&project_ids).map_err(|e| e.to_string())?;
+    let projects: Vec<ProjectInfo> = send(
+        http.get(format!("{API}/projects")).query(&[("ids", ids_json)]),
+    )
+    .await?
+    .json()
+    .await
+    .map_err(|e| e.to_string())?;
+    let proj_by_id: std::collections::HashMap<String, ProjectInfo> =
+        projects.into_iter().map(|p| (p.id.clone(), p)).collect();
+
+    let mut index = read_content_index(instance_id);
+    for (hash, version) in &versions {
+        let Some(file) = by_hash.get(hash) else { continue };
+        let filename = safe_name(&file.path);
+        let project = proj_by_id.get(&version.project_id);
+        let kind = match project {
+            Some(p) => kind_and_folder(version, p).0,
+            None => "mod",
+        };
+        let item = InstalledItem {
+            project_id: version.project_id.clone(),
+            version_id: version.id.clone(),
+            kind: kind.to_string(),
+            name: project.map(|p| p.title.clone()).unwrap_or_else(|| filename.clone()),
+            filename,
+            version_number: version.version_number.clone(),
+            icon_url: project.and_then(|p| p.icon_url.clone()),
+            game_versions: version.game_versions.clone(),
+            loaders: version.loaders.clone(),
+            dependency: false,
+            installed_at: chrono::Utc::now().to_rfc3339(),
+        };
+        index.items.retain(|i| i.project_id != item.project_id);
+        index.items.push(item);
+    }
+    write_content_index(instance_id, &index)?;
+    Ok(())
+}
+
+/// Matches local jars in `mods/` against Modrinth by sha1 file hash and records
+/// any matches in the content index, so manually-added mods gain
+/// update/version-switching features. Returns how many were newly matched.
+#[tauri::command]
+pub async fn match_local_mods(instance_id: String) -> Result<usize, String> {
+    use sha1::{Digest, Sha1};
+
+    let dir = paths::instance_game_dir(&instance_id).join("mods");
+    let known: std::collections::HashSet<String> =
+        read_content_index(&instance_id).items.iter().map(|i| i.filename.clone()).collect();
+
+    // sha1 -> base jar filename (only jars not already linked).
+    let mut by_hash: HashMap<String, String> = HashMap::new();
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(0),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let raw = entry.file_name().to_string_lossy().into_owned();
+        let base = raw.strip_suffix(".disabled").unwrap_or(&raw).to_string();
+        if !base.ends_with(".jar") || known.contains(&base) {
+            continue;
+        }
+        if let Ok(bytes) = std::fs::read(&path) {
+            let mut hasher = Sha1::new();
+            hasher.update(&bytes);
+            by_hash.insert(format!("{:x}", hasher.finalize()), base);
+        }
+    }
+    if by_hash.is_empty() {
+        return Ok(0);
+    }
+
+    let http = http();
+    let hashes: Vec<&String> = by_hash.keys().collect();
+    let resp = send(
+        http.post(format!("{API}/version_files"))
+            .json(&serde_json::json!({ "hashes": hashes, "algorithm": "sha1" })),
+    )
+    .await?;
+    if !resp.status().is_success() {
+        return Err(format!("version_files: {}", resp.status()));
+    }
+    let versions: HashMap<String, Version> = resp.json().await.map_err(|e| e.to_string())?;
+    if versions.is_empty() {
+        return Ok(0);
+    }
+
+    // Project metadata (title/icon) for the matches.
+    let project_ids: Vec<String> = versions
+        .values()
+        .map(|v| v.project_id.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let ids_json = serde_json::to_string(&project_ids).map_err(|e| e.to_string())?;
+    let projects: Vec<ProjectInfo> = send(
+        http.get(format!("{API}/projects")).query(&[("ids", ids_json)]),
+    )
+    .await?
+    .json()
+    .await
+    .map_err(|e| e.to_string())?;
+    let proj_by_id: HashMap<String, ProjectInfo> =
+        projects.into_iter().map(|p| (p.id.clone(), p)).collect();
+
+    let mut index = read_content_index(&instance_id);
+    let mut count = 0usize;
+    for (hash, version) in &versions {
+        let Some(filename) = by_hash.get(hash) else { continue };
+        let project = proj_by_id.get(&version.project_id);
+        let kind = match project {
+            Some(p) => kind_and_folder(version, p).0,
+            None => "mod",
+        };
+        let item = InstalledItem {
+            project_id: version.project_id.clone(),
+            version_id: version.id.clone(),
+            kind: kind.to_string(),
+            name: project.map(|p| p.title.clone()).unwrap_or_else(|| filename.clone()),
+            filename: filename.clone(),
+            version_number: version.version_number.clone(),
+            icon_url: project.and_then(|p| p.icon_url.clone()),
+            game_versions: version.game_versions.clone(),
+            loaders: version.loaders.clone(),
+            dependency: false,
+            installed_at: chrono::Utc::now().to_rfc3339(),
+        };
+        index.items.retain(|i| i.project_id != item.project_id && i.filename != item.filename);
+        index.items.push(item);
+        count += 1;
+    }
+    write_content_index(&instance_id, &index)?;
+    Ok(count)
+}
+
+fn loader_from_deps(deps: &HashMap<String, String>) -> Loader {
+    if let Some(v) = deps.get("fabric-loader") {
+        Loader::Fabric(v.clone())
+    } else if let Some(v) = deps.get("quilt-loader") {
+        Loader::Quilt(v.clone())
+    } else if let Some(v) = deps.get("neoforge") {
+        Loader::NeoForge(v.clone())
+    } else if let Some(v) = deps.get("forge") {
+        Loader::Forge(v.clone())
+    } else {
+        Loader::Vanilla
+    }
+}
+
+fn extract_overrides(
+    archive: &mut zip::ZipArchive<Cursor<&Vec<u8>>>,
+    game_dir: &Path,
+) -> Result<(), String> {
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        if entry.is_dir() {
+            continue;
+        }
+        let name = entry.name().to_string();
+        let rel = name
+            .strip_prefix("overrides/")
+            .or_else(|| name.strip_prefix("client-overrides/"));
+        let Some(rel) = rel else { continue };
+
+        let dest = join_safe(game_dir, rel)?;
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let mut buf = Vec::new();
+        entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+        std::fs::write(&dest, &buf).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// ===== helpers =====
+
+async fn download(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
+    let resp = send(client.get(url)).await?;
+    if !resp.status().is_success() {
+        return Err(format!("download failed ({}): {url}", resp.status()));
+    }
+    Ok(resp.bytes().await.map_err(|e| e.to_string())?.to_vec())
+}
+
+/// Strips any path components from a filename (defense against `../`).
+fn safe_name(name: &str) -> String {
+    Path::new(name)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "file".to_string())
+}
+
+/// Joins a relative archive path onto `base`, rejecting traversal outside it.
+fn join_safe(base: &Path, rel: &str) -> Result<PathBuf, String> {
+    let mut out = base.to_path_buf();
+    for comp in Path::new(rel).components() {
+        match comp {
+            Component::Normal(c) => out.push(c),
+            Component::CurDir => {}
+            _ => return Err(format!("unsafe path in modpack: {rel}")),
+        }
+    }
+    Ok(out)
+}

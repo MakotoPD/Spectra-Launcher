@@ -1,0 +1,65 @@
+[package]
+name = "app"
+version = "0.1.0"
+description = "Minecraft launcher"
+authors = ["MakotoPD"]
+license = "MIT"
+repository = "https://github.com/MakotoPD/Mako-Launcher"
+edition = "2021"
+rust-version = "1.77.2"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "mako_launcher_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.2", features = [] }
+# Loads .env at build time so DISCORD_CLIENT_ID can be embedded.
+dotenvy = "0.15"
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+tauri = { version = "2.11.2", features = ["protocol-asset"] }
+tauri-plugin-log = "2"
+
+# Tauri plugins (must match JS-side @tauri-apps/plugin-* versions)
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-store = "2"
+tauri-plugin-os = "2"
+
+# Minecraft engine: install/launch, Microsoft auth, Fabric/Quilt/Forge/NeoForge,
+# automatic Java provisioning. https://github.com/BatuhanAksoyy/lyceris
+lyceris = "1.1.3"
+
+# Async runtime + HTTP client (reqwest features mirror lyceris to avoid OpenSSL)
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "multipart"] }
+
+# Utilities
+anyhow = "1"
+thiserror = "2"
+dirs = "5"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+
+# Total system memory (for the RAM allocation slider)
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+
+# Discord Rich Presence (privacy-gated)
+discord-rich-presence = "0.2"
+
+# Reading instance content: zip packs, gzipped NBT world saves (level.dat)
+zip = { version = "2", default-features = false, features = ["deflate"] }
+flate2 = "1"
+fastnbt = "2"
+# Parsing Forge/NeoForge mods.toml metadata from local jars
+toml = "0.8"
+# sha1 of local jars, to match them against Modrinth by file hash
+sha1 = "0.10"

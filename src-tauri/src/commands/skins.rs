@@ -1,0 +1,258 @@
+//! Local skin library: the player saves several skins and picks one at launch.
+//!
+//! Skins are stored as `skins/<id>.png` with an index at `skins/skins.json`.
+//! Uploading the selected skin to Mojang (so it shows in-game) is done against
+//! the Minecraft Services API and will be wired up once the auth session is
+//! threaded through here — see `apply_skin`.
+
+use base64::Engine;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+use crate::commands::auth::refresh_active_account;
+use crate::models::{AccountKind, SavedSkin};
+use crate::{paths, store};
+
+const USER_AGENT: &str = "Mako-Launcher/0.1.0";
+
+fn http() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder().user_agent(USER_AGENT).build().map_err(|e| e.to_string())
+}
+
+fn png_data_url(bytes: &[u8]) -> String {
+    format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+fn skins_index_file() -> PathBuf {
+    paths::skins_dir().join("skins.json")
+}
+
+fn skin_png_file(id: &str) -> PathBuf {
+    paths::skins_dir().join(format!("{id}.png"))
+}
+
+fn load_index() -> Result<Vec<SavedSkin>, String> {
+    Ok(store::read_json::<Vec<SavedSkin>>(&skins_index_file())?.unwrap_or_default())
+}
+
+fn save_index(skins: &[SavedSkin]) -> Result<(), String> {
+    store::write_json(&skins_index_file(), &skins.to_vec())
+}
+
+#[tauri::command]
+pub fn list_skins() -> Result<Vec<SavedSkin>, String> {
+    load_index()
+}
+
+/// Copies a `.png` from `source_path` into the skin library and indexes it.
+#[tauri::command]
+pub fn save_skin(name: String, model: String, source_path: String) -> Result<SavedSkin, String> {
+    std::fs::create_dir_all(paths::skins_dir()).map_err(|e| e.to_string())?;
+
+    let id = uuid::Uuid::new_v4().to_string();
+    std::fs::copy(&source_path, skin_png_file(&id))
+        .map_err(|e| format!("copy skin: {e}"))?;
+
+    let skin = SavedSkin {
+        id,
+        name,
+        model: if model == "slim" { "slim".into() } else { "classic".into() },
+        active: false,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+
+    let mut index = load_index()?;
+    index.push(skin.clone());
+    save_index(&index)?;
+    Ok(skin)
+}
+
+/// Marks `id` as the active skin and clears the flag on all others.
+fn mark_active(index: &mut [SavedSkin], id: &str) {
+    for s in index.iter_mut() {
+        s.active = s.id == id;
+    }
+}
+
+/// Sets a saved skin's arm model ("classic" = 4px arms, "slim" = 3px).
+#[tauri::command]
+pub fn set_skin_model(id: String, model: String) -> Result<(), String> {
+    let m = if model == "slim" { "slim" } else { "classic" };
+    let mut index = load_index()?;
+    if let Some(skin) = index.iter_mut().find(|s| s.id == id) {
+        skin.model = m.to_string();
+        save_index(&index)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_skin(id: String) -> Result<(), String> {
+    let _ = std::fs::remove_file(skin_png_file(&id));
+    let mut index = load_index()?;
+    index.retain(|s| s.id != id);
+    save_index(&index)
+}
+
+/// Absolute path to a saved skin's PNG (for `convertFileSrc` in the 3D preview).
+#[tauri::command]
+pub fn get_skin_path(id: String) -> Result<String, String> {
+    let path = skin_png_file(&id);
+    if !path.exists() {
+        return Err(format!("skin '{id}' not found"));
+    }
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// A saved skin's PNG as a `data:` URL, for loading into the WebGL viewer without
+/// asset-protocol/CORS tainting.
+#[tauri::command]
+pub fn get_skin_data_url(id: String) -> Result<String, String> {
+    let bytes = std::fs::read(skin_png_file(&id)).map_err(|_| format!("skin '{id}' not found"))?;
+    Ok(png_data_url(&bytes))
+}
+
+/// Downloads any skin texture URL (e.g. a default skin) as a `data:` URL so the
+/// 3D viewer can use it regardless of the source's CORS headers.
+#[tauri::command]
+pub async fn fetch_skin_data_url(url: String) -> Result<String, String> {
+    let bytes = http()?.get(&url).send().await.map_err(|e| e.to_string())?
+        .bytes().await.map_err(|e| e.to_string())?;
+    Ok(png_data_url(&bytes))
+}
+
+// ===== Logged-in player's current skin =====
+
+#[derive(Serialize)]
+pub struct PlayerSkin {
+    /// The skin texture as a `data:` URL.
+    skin: String,
+    slim: bool,
+}
+
+#[derive(Deserialize)]
+struct SessionProfile {
+    properties: Vec<SessionProperty>,
+}
+#[derive(Deserialize)]
+struct SessionProperty {
+    name: String,
+    value: String,
+}
+
+/// Downloads a player's current skin (bytes + model) from Mojang's public session
+/// server. Falls back to the classic default skin if the profile has none.
+async fn fetch_player_skin(uuid: &str) -> Result<(Vec<u8>, bool), String> {
+    let id = uuid.replace('-', "");
+    let client = http()?;
+    let profile: SessionProfile = client
+        .get(format!("https://sessionserver.mojang.com/session/minecraft/profile/{id}"))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let textures = profile
+        .properties
+        .iter()
+        .find(|p| p.name == "textures")
+        .ok_or("profile has no textures")?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(&textures.value)
+        .map_err(|e| e.to_string())?;
+    let json: serde_json::Value = serde_json::from_slice(&decoded).map_err(|e| e.to_string())?;
+
+    let skin_node = &json["textures"]["SKIN"];
+    let slim = skin_node["metadata"]["model"].as_str() == Some("slim");
+    let url = skin_node["url"]
+        .as_str()
+        .unwrap_or("https://assets.mojang.com/SkinTemplates/steve.png");
+
+    let bytes = client.get(url).send().await.map_err(|e| e.to_string())?
+        .bytes().await.map_err(|e| e.to_string())?.to_vec();
+    Ok((bytes, slim))
+}
+
+/// The player's current skin as a `data:` URL + model.
+#[tauri::command]
+pub async fn get_player_skin(uuid: String) -> Result<PlayerSkin, String> {
+    let (bytes, slim) = fetch_player_skin(&uuid).await?;
+    Ok(PlayerSkin { skin: png_data_url(&bytes), slim })
+}
+
+/// Imports the player's current skin into the library (deduplicated by file
+/// contents) and marks it as the active skin. Returns the saved entry.
+#[tauri::command]
+pub async fn import_player_skin(uuid: String, name: String) -> Result<SavedSkin, String> {
+    let (bytes, slim) = fetch_player_skin(&uuid).await?;
+    let model = if slim { "slim" } else { "classic" };
+
+    let mut index = load_index()?;
+
+    // Reuse an identical skin already in the library instead of duplicating.
+    if let Some(existing) = index.iter().find(|s| {
+        std::fs::read(skin_png_file(&s.id)).map(|b| b == bytes).unwrap_or(false)
+    }) {
+        let id = existing.id.clone();
+        mark_active(&mut index, &id);
+        save_index(&index)?;
+        return index.into_iter().find(|s| s.id == id).ok_or("skin vanished".into());
+    }
+
+    std::fs::create_dir_all(paths::skins_dir()).map_err(|e| e.to_string())?;
+    let id = uuid::Uuid::new_v4().to_string();
+    std::fs::write(skin_png_file(&id), &bytes).map_err(|e| format!("write skin: {e}"))?;
+
+    let skin = SavedSkin {
+        id: id.clone(),
+        name: if name.trim().is_empty() { "Skin".into() } else { name },
+        model: model.into(),
+        active: true,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    };
+    index.push(skin.clone());
+    mark_active(&mut index, &id);
+    save_index(&index)?;
+    Ok(skin)
+}
+
+/// Uploads a saved skin to the active Microsoft account so it shows in-game.
+#[tauri::command]
+pub async fn apply_skin(id: String) -> Result<(), String> {
+    let account = refresh_active_account().await?;
+    if account.kind != AccountKind::Microsoft {
+        return Err("only Microsoft accounts can change their skin".into());
+    }
+
+    let skin = load_index()?
+        .into_iter()
+        .find(|s| s.id == id)
+        .ok_or_else(|| format!("skin '{id}' not found"))?;
+    let bytes = std::fs::read(skin_png_file(&id)).map_err(|e| format!("read skin: {e}"))?;
+    let variant = if skin.model == "slim" { "slim" } else { "classic" };
+
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name("skin.png")
+        .mime_str("image/png")
+        .map_err(|e| e.to_string())?;
+    let form = reqwest::multipart::Form::new().text("variant", variant).part("file", part);
+
+    let resp = http()?
+        .post("https://api.minecraftservices.com/minecraft/profile/skins")
+        .bearer_auth(&account.access_token)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("skin upload failed: {}", resp.status()));
+    }
+
+    // Reflect the new active skin in the library.
+    let mut index = load_index()?;
+    mark_active(&mut index, &id);
+    save_index(&index)?;
+    Ok(())
+}
