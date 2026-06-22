@@ -549,10 +549,35 @@ pub fn reconcile_running(app: &AppHandle) {
             if let Ok(mut adopted) = state.adopted.lock() {
                 adopted.insert(id.clone());
             }
+            // Spawn a watcher so the UI updates when the game eventually exits.
+            spawn_adopted_watcher(app.clone(), id, pid);
         } else {
             remove_lock(&id);
         }
     }
+}
+
+/// Polls the adopted process every 4 seconds. When Java exits, cleans up state
+/// and emits `mc://exited` so the frontend stops showing the instance as running.
+fn spawn_adopted_watcher(app: AppHandle, id: String, pid: u32) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+            if !is_game_pid_alive(pid) {
+                if let Some(state) = app.try_state::<AppState>() {
+                    if let Ok(mut r) = state.running.lock() { r.remove(&id); }
+                    if let Ok(mut p) = state.pids.lock()    { p.remove(&id); }
+                    if let Ok(mut a) = state.adopted.lock() { a.remove(&id); }
+                    // Update Discord presence in case it was shown for this instance.
+                    if let Ok(mut map) = state.discord_playing.lock() { map.remove(&id); }
+                    crate::discord::update_presence(&state);
+                }
+                remove_lock(&id);
+                let _ = app.emit("mc://exited", ExitInfo { instance_id: id, code: None });
+                break;
+            }
+        }
+    });
 }
 
 fn kill_process_tree(pid: u32, force: bool) -> Result<(), String> {
