@@ -46,9 +46,9 @@
       "blurb": "Przeglądarka paczek modów z Modrinth (wyszukiwarka i filtry kategorii / wersji / loadera) już wkrótce."
     },
     "import": {
-      "fromFile": "Z pliku modpacka",
-      "fromFileDesc": "Wybierz plik .mrpack z dysku (Modrinth).",
-      "chooseFile": "Wybierz plik .mrpack",
+      "fromFile": "Z pliku",
+      "fromFileDesc": "Wybierz plik .mrpack (Modrinth) lub backup Mako .zip z dysku.",
+      "chooseFile": "Wybierz plik",
       "fromLauncher": "Z innego launchera",
       "fromLauncherDesc": "Wykryte instancje z Prism, CurseForge i aplikacji Modrinth.",
       "none": "Nie znaleziono instancji w innych launcherach.",
@@ -120,7 +120,9 @@
     "updateAvailable": "Dostępna nowa wersja modpacka: {v}",
     "showChangelog": "Changelog",
     "updateNow": "Aktualizuj",
-    "updated": "Modpack zaktualizowany"
+    "updated": "Modpack zaktualizowany",
+    "export": "Eksportuj / Backup",
+    "exported": "Instancja wyeksportowana"
   },
   "common": {
     "save": "Zapisz",
@@ -145,6 +147,23 @@
     "shareHint": "Wyślij na mclo.gs i skopiuj link",
     "shared": "Log wysłany na mclo.gs (link skopiowany)",
     "openLink": "Otwórz"
+  },
+  "export": {
+    "title": "Eksport: {name}",
+    "format": "Format",
+    "mrpackDesc": "Udostępnij na Modrinth lub otwórz w dowolnym launcherze.",
+    "backup": "Backup (.zip)",
+    "backupDesc": "Pełna kopia lokalna, przywracalna w Mako.",
+    "version": "Wersja paczki",
+    "summary": "Opis",
+    "summaryPlaceholder": "Opcjonalnie",
+    "include": "Co dołączyć",
+    "all": "Wszystko",
+    "none": "Nic",
+    "empty": "Nie ma czego wyeksportować.",
+    "mrpackHint": "Mody/resourcepacki/shadery znalezione na Modrinth są linkowane; reszta trafia do overrides.",
+    "exportBtn": "Eksportuj",
+    "done": "Instancja wyeksportowana"
   },
   "settings": {
     "title": "Ustawienia",
@@ -227,7 +246,8 @@
     "linking": "Łączenie z Modrinth…",
     "openLogs": "Otwórz logi na żywo",
     "importingModpack": "Importowanie modpacka…",
-    "importingInstance": "Importowanie: {name}"
+    "importingInstance": "Importowanie: {name}",
+    "exportingInstance": "Eksportowanie: {name}"
   },
   "content": {
     "count": "{n} elementów",

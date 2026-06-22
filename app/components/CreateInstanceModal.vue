@@ -226,7 +226,7 @@ async function importFile() {
     error.value = null
     const tid = activity.startTask(t('activity.importingModpack'))
     try {
-      const instance = await invoke<Instance>('import_modpack_file', { path: selected, nameOverride: null })
+      const instance = await invoke<Instance>('import_file', { path: selected, nameOverride: null })
       await instances.load()
       close()
       router.push(`/instance/${instance.id}`)

@@ -132,6 +132,14 @@ export interface PackInfo {
 }
 export interface ShaderInfo { name: string; filename: string; is_zip: boolean }
 export interface ServerInfo { name: string; ip: string; icon: string | null; hidden: boolean }
+// A top-level game-dir entry for the export selection dialog (import.rs).
+export interface InstanceEntry {
+  name: string
+  is_dir: boolean
+  size: number
+  recommended: boolean
+}
+
 // An instance discovered in another launcher's data dir (import.rs).
 export interface ExternalInstance {
   launcher: 'prism' | 'curseforge' | 'modrinth'

@@ -9,7 +9,7 @@
 //! `project_type:mod` with `categories:datapack`.
 
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -634,17 +634,22 @@ pub async fn modrinth_install_modpack(
     Ok(instance)
 }
 
-/// Imports a modpack from a local file (`.mrpack`, or a `.zip` that is actually
-/// a Modrinth pack). The pack's mod files are still fetched from their CDN URLs;
-/// only the archive (overrides + index) comes from disk. CurseForge `.zip`s are
-/// detected and rejected with a pointer to the launcher-import path.
+/// Imports an instance from a local file. Handles three kinds, by content:
+///  - a Mako backup `.zip` (restored verbatim, offline),
+///  - a Modrinth `.mrpack` (mods fetched from their CDN URLs; overrides bundled),
+///  - a CurseForge `.zip` (rejected, with a pointer to the launcher-import path).
 #[tauri::command]
-pub async fn import_modpack_file(
+pub async fn import_file(
     app: AppHandle,
     path: String,
     name_override: Option<String>,
 ) -> Result<Instance, String> {
     let pack_bytes = std::fs::read(&path).map_err(|e| format!("read file: {e}"))?;
+
+    // Mako backup — fully offline restore.
+    if crate::commands::import::is_backup_zip(&pack_bytes) {
+        return crate::commands::import::restore_backup_from_bytes(&pack_bytes);
+    }
 
     if let Ok((raw_index, index)) = parse_mrpack(&pack_bytes) {
         let mc_version = index
@@ -675,6 +680,203 @@ fn zip_has_curseforge_manifest(pack_bytes: &[u8]) -> bool {
     let Ok(mut f) = archive.by_name("manifest.json") else { return false };
     let mut s = String::new();
     f.read_to_string(&mut s).is_ok() && (s.contains("minecraftModpack") || s.contains("\"manifestType\""))
+}
+
+// ===== Export instance to a Modrinth .mrpack =====
+
+#[derive(Serialize)]
+struct MrpackIndex {
+    #[serde(rename = "formatVersion")]
+    format_version: u32,
+    game: String,
+    #[serde(rename = "versionId")]
+    version_id: String,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
+    files: Vec<MrpackFile>,
+    dependencies: HashMap<String, String>,
+}
+
+#[derive(Serialize)]
+struct MrpackFile {
+    path: String,
+    hashes: MrpackHashes,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    env: Option<MrpackEnv>,
+    downloads: Vec<String>,
+    #[serde(rename = "fileSize")]
+    file_size: u64,
+}
+
+#[derive(Serialize)]
+struct MrpackHashes {
+    sha1: String,
+    sha512: String,
+}
+
+#[derive(Serialize)]
+struct MrpackEnv {
+    client: String,
+    server: String,
+}
+
+/// Exports an instance as a Modrinth `.mrpack`, ready to upload to Modrinth or
+/// open in any compatible launcher. Mods/resource packs/shaders that resolve to
+/// Modrinth (by sha1) go into the manifest's `files` with their CDN download URL;
+/// everything else among the selected entries is bundled under `overrides/`.
+/// `include` is the set of top-level game-dir entries the user chose to export.
+#[tauri::command]
+pub async fn export_mrpack(
+    id: String,
+    dest: String,
+    version: Option<String>,
+    summary: Option<String>,
+    include: Vec<String>,
+) -> Result<(), String> {
+    use sha1::{Digest, Sha1};
+
+    let instance: Instance =
+        store::read_json(&paths::instance_config_file(&id))?.ok_or("instance not found")?;
+    let game_dir = paths::instance_game_dir(&id);
+    let include: std::collections::HashSet<String> = include.into_iter().collect();
+
+    // Hash candidate downloadable content from the selected content folders.
+    struct Cand {
+        rel: String,
+        sha1: String,
+    }
+    let mut cands: Vec<Cand> = Vec::new();
+    for sub in ["mods", "resourcepacks", "shaderpacks"] {
+        if !include.contains(sub) {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(game_dir.join(sub)) else { continue };
+        for e in entries.flatten() {
+            let path = e.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.ends_with(".disabled") {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&path) else { continue };
+            let mut h = Sha1::new();
+            h.update(&bytes);
+            cands.push(Cand { rel: format!("{sub}/{name}"), sha1: format!("{:x}", h.finalize()) });
+        }
+    }
+
+    // Resolve which candidates are on Modrinth → manifest files; rest fall through
+    // to overrides.
+    let mut files: Vec<MrpackFile> = Vec::new();
+    let mut matched: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if !cands.is_empty() {
+        let hashes: Vec<&str> = cands.iter().map(|c| c.sha1.as_str()).collect();
+        let resp = send(
+            http()
+                .post(format!("{API}/version_files"))
+                .json(&serde_json::json!({ "hashes": hashes, "algorithm": "sha1" })),
+        )
+        .await?;
+        if resp.status().is_success() {
+            let versions: HashMap<String, Version> = resp.json().await.map_err(|e| e.to_string())?;
+            for c in &cands {
+                let Some(version) = versions.get(&c.sha1) else { continue };
+                let Some(file) = version.files.iter().find(|f| f.hashes.sha1.as_deref() == Some(c.sha1.as_str())) else { continue };
+                let (Some(sha1), Some(sha512)) = (file.hashes.sha1.clone(), file.hashes.sha512.clone()) else { continue };
+                // Modrinth only accepts downloads from its CDN (+ a few git hosts).
+                if !file.url.starts_with("https://cdn.modrinth.com/") {
+                    continue;
+                }
+                let env = if c.rel.starts_with("resourcepacks/") || c.rel.starts_with("shaderpacks/") {
+                    Some(MrpackEnv { client: "required".into(), server: "unsupported".into() })
+                } else {
+                    None
+                };
+                files.push(MrpackFile {
+                    path: c.rel.clone(),
+                    hashes: MrpackHashes { sha1, sha512 },
+                    env,
+                    downloads: vec![file.url.clone()],
+                    file_size: file.size,
+                });
+                matched.insert(c.rel.clone());
+            }
+        }
+    }
+
+    let mut dependencies = HashMap::new();
+    dependencies.insert("minecraft".to_string(), instance.mc_version.clone());
+    match &instance.loader {
+        Loader::Fabric(v) => { dependencies.insert("fabric-loader".into(), v.clone()); }
+        Loader::Quilt(v) => { dependencies.insert("quilt-loader".into(), v.clone()); }
+        Loader::Forge(v) => { dependencies.insert("forge".into(), v.clone()); }
+        Loader::NeoForge(v) => { dependencies.insert("neoforge".into(), v.clone()); }
+        Loader::Vanilla => {}
+    }
+
+    let index = MrpackIndex {
+        format_version: 1,
+        game: "minecraft".into(),
+        version_id: version.filter(|v| !v.trim().is_empty()).unwrap_or_else(|| "1.0.0".into()),
+        name: instance.name.clone(),
+        summary: summary.filter(|s| !s.trim().is_empty()),
+        files,
+        dependencies,
+    };
+
+    let out = std::fs::File::create(&dest).map_err(|e| format!("create {dest}: {e}"))?;
+    let mut zip = zip::ZipWriter::new(out);
+    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+    let json = serde_json::to_vec_pretty(&index).map_err(|e| e.to_string())?;
+    zip.start_file("modrinth.index.json", opts).map_err(|e| e.to_string())?;
+    zip.write_all(&json).map_err(|e| e.to_string())?;
+
+    // Bundle the selected entries (minus files already in the manifest) as overrides.
+    for name in &include {
+        if game_dir.join(name).exists() {
+            add_overrides(&mut zip, &game_dir, name, opts, &matched)?;
+        }
+    }
+
+    zip.finish().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Recursively adds `rel` (file or dir, relative to the game dir) under
+/// `overrides/`, skipping disabled mods and anything already in the manifest.
+fn add_overrides(
+    zip: &mut zip::ZipWriter<std::fs::File>,
+    base: &Path,
+    rel: &str,
+    opts: zip::write::SimpleFileOptions,
+    matched: &std::collections::HashSet<String>,
+) -> Result<(), String> {
+    let path = base.join(rel);
+    if path.is_dir() {
+        let Ok(entries) = std::fs::read_dir(&path) else { return Ok(()) };
+        for e in entries.flatten() {
+            let child = format!("{rel}/{}", e.file_name().to_string_lossy());
+            add_overrides(zip, base, &child, opts, matched)?;
+        }
+        return Ok(());
+    }
+    if rel.ends_with(".disabled") || matched.contains(rel) || is_junk(rel) {
+        return Ok(());
+    }
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    zip.start_file(format!("overrides/{rel}"), opts).map_err(|e| e.to_string())?;
+    zip.write_all(&bytes).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Junk that shouldn't ship in a shareable pack (OS cruft, packwiz metadata).
+fn is_junk(rel: &str) -> bool {
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    matches!(name, ".DS_Store" | "Thumbs.db" | "thumbs.db") || name.ends_with(".pw.toml")
 }
 
 /// Reads `modrinth.index.json` (raw + parsed) from a `.mrpack`.

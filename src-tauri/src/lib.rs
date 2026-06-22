@@ -118,12 +118,15 @@ pub fn run() {
             commands::modrinth::modrinth_install_with_deps,
             commands::modrinth::get_installed_content,
             commands::modrinth::modrinth_install_modpack,
-            commands::modrinth::import_modpack_file,
+            commands::modrinth::import_file,
+            commands::modrinth::export_mrpack,
             commands::modrinth::check_modpack_update,
             commands::modrinth::update_modpack,
-            // Import from other launchers
+            // Import / export
             commands::import::detect_external_instances,
             commands::import::import_external_instance,
+            commands::import::list_instance_entries,
+            commands::import::export_instance,
             // Mod management
             commands::mods::list_mods,
             commands::mods::set_mod_enabled,

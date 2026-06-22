@@ -46,9 +46,9 @@
       "blurb": "Modrinth modpack browser with search and category / version / loader filters is coming soon."
     },
     "import": {
-      "fromFile": "From a modpack file",
-      "fromFileDesc": "Pick a Modrinth .mrpack from your disk.",
-      "chooseFile": "Choose .mrpack file",
+      "fromFile": "From a file",
+      "fromFileDesc": "Pick a Modrinth .mrpack or a Mako backup .zip from your disk.",
+      "chooseFile": "Choose file",
       "fromLauncher": "From another launcher",
       "fromLauncherDesc": "Detected instances from Prism, CurseForge and the Modrinth App.",
       "none": "No instances found in other launchers.",
@@ -120,7 +120,9 @@
     "updateAvailable": "New modpack version available: {v}",
     "showChangelog": "Changelog",
     "updateNow": "Update",
-    "updated": "Modpack updated"
+    "updated": "Modpack updated",
+    "export": "Export / Backup",
+    "exported": "Instance exported"
   },
   "common": {
     "save": "Save",
@@ -145,6 +147,23 @@
     "shareHint": "Upload to mclo.gs and copy the link",
     "shared": "Log uploaded to mclo.gs (link copied)",
     "openLink": "Open"
+  },
+  "export": {
+    "title": "Export {name}",
+    "format": "Format",
+    "mrpackDesc": "Share on Modrinth or open in any launcher.",
+    "backup": "Backup (.zip)",
+    "backupDesc": "Full local backup, restorable in Mako.",
+    "version": "Pack version",
+    "summary": "Summary",
+    "summaryPlaceholder": "Optional",
+    "include": "What to include",
+    "all": "All",
+    "none": "None",
+    "empty": "Nothing to export.",
+    "mrpackHint": "Mods/resource packs/shaders found on Modrinth are linked; everything else is bundled as overrides.",
+    "exportBtn": "Export",
+    "done": "Instance exported"
   },
   "settings": {
     "title": "Settings",
@@ -227,7 +246,8 @@
     "linking": "Linking with Modrinth…",
     "openLogs": "Open live logs",
     "importingModpack": "Importing modpack…",
-    "importingInstance": "Importing: {name}"
+    "importingInstance": "Importing: {name}",
+    "exportingInstance": "Exporting: {name}"
   },
   "content": {
     "count": "{n} items",

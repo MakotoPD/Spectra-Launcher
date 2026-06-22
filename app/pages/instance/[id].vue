@@ -171,6 +171,7 @@ const router = useRouter()
 const instances = useInstancesStore()
 const toast = useToast()
 const { t } = useI18n()
+const exportModal = useExportModal()
 
 const id = computed(() => String(route.params.id))
 const mc = useMinecraftLaunch(id)
@@ -307,6 +308,11 @@ const menuItems = computed(() => [[
     icon: 'i-lucide-folder',
     onSelect: openGameFolder,
   },
+  {
+    label: t('instance.export'),
+    icon: 'i-lucide-package',
+    onSelect: () => { if (instance.value) exportModal.open(id.value, instance.value.name) },
+  },
 ], [
   {
     label: t('common.remove'),
@@ -333,4 +339,5 @@ async function openGameFolder() {
     toast.add({ title: String(e), color: 'error' })
   }
 }
+
 </script>
