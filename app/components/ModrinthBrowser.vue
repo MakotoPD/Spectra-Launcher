@@ -9,6 +9,13 @@
         <!-- toolbar -->
         <div class="space-y-2 border-b border-default px-4 py-3">
           <div class="flex flex-wrap items-center gap-2">
+            <USelect
+              v-if="providerItems.length > 1"
+              v-model="provider"
+              :items="providerItems"
+              value-key="value"
+              class="w-32"
+            />
             <UInput
               v-model="query"
               icon="i-lucide-search"
@@ -269,13 +276,26 @@
 
 <script setup lang="ts">
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { open as openExternal } from '@tauri-apps/plugin-shell'
 import { marked } from 'marked'
-import type { ModrinthHit, ModrinthVersion, ModrinthCategory, ModrinthSortIndex, ModrinthGalleryItem } from '~/types/modrinth'
+import type { ModrinthHit, ModrinthVersion, ModrinthCategory, ModrinthSortIndex, ModrinthGalleryItem, ModrinthProjectType } from '~/types/modrinth'
 import type { LoaderType } from '~/types/launcher'
 
 const { isOpen, config, close } = useModrinthBrowser()
 const modrinth = useModrinth()
+const curseforge = useCurseforge()
 const meta = useMinecraftMeta()
+
+// --- provider (Modrinth / CurseForge) ---
+type Provider = 'modrinth' | 'curseforge'
+const provider = ref<Provider>('modrinth')
+const cfEnabled = ref(false)
+const isCf = computed(() => provider.value === 'curseforge')
+const providerItems = computed(() => {
+  const items = [{ label: 'Modrinth', value: 'modrinth' as Provider }]
+  if (cfEnabled.value) items.push({ label: 'CurseForge', value: 'curseforge' as Provider })
+  return items
+})
 const instances = useInstancesStore()
 const activity = useActivityCenter()
 const toast = useToast()
@@ -396,16 +416,23 @@ async function runSearch(append = false) {
   loadingSearch.value = true
   searchError.value = null
   try {
-    const res = await modrinth.search({
+    const params = {
       query: query.value,
-      project_type: searchProjectType(kind.value),
+      // CurseForge keeps the raw kind (its classId distinguishes datapacks);
+      // Modrinth collapses datapack → mod + a category facet. The CF backend
+      // accepts the raw kind as a plain string; the cast just satisfies the
+      // shared param type (Modrinth never receives "datapack" at runtime).
+      project_type: (isCf.value ? kind.value : searchProjectType(kind.value)) as ModrinthProjectType,
       loaders: loaderFacetFor(kind.value, loaderValue.value) || [],
       game_versions: gameVersionValue.value ? [gameVersionValue.value] : [],
-      categories: [...baseCategories(kind.value), ...selectedCategories.value],
+      categories: isCf.value
+        ? selectedCategories.value
+        : [...baseCategories(kind.value), ...selectedCategories.value],
       index: sort.value,
       offset: append ? offset.value : 0,
       limit: LIMIT,
-    })
+    }
+    const res = await (isCf.value ? curseforge.search(params) : modrinth.search(params))
     totalHits.value = res.total_hits
     offset.value = res.offset + res.hits.length
     hits.value = append ? [...hits.value, ...res.hits] : res.hits
@@ -444,8 +471,10 @@ async function selectHit(hit: ModrinthHit) {
   detailTab.value = 'description'
   loadingBody.value = true
 
+  const api = isCf.value ? curseforge : modrinth
+
   // Full project: markdown description + gallery (in parallel with versions).
-  modrinth.project(hit.project_id)
+  api.project(hit.project_id)
     .then((p) => {
       gallery.value = p.gallery ?? []
       return renderBody(p.body)
@@ -454,7 +483,7 @@ async function selectHit(hit: ModrinthHit) {
     .finally(() => { loadingBody.value = false })
 
   try {
-    versions.value = await modrinth.versions(
+    versions.value = await api.versions(
       hit.project_id,
       loaderFacetFor(kind.value, loaderValue.value) || undefined,
       gameVersionValue.value ? [gameVersionValue.value] : undefined,
@@ -476,34 +505,66 @@ async function doInstall(version: ModrinthVersion) {
   )
   try {
     if (cfg.mode === 'createModpack') {
-      const file = version.files.find(f => f.primary) ?? version.files[0]
-      if (!file) throw new Error(t('modrinth.noFile'))
       modpackProgress.value = { current: 0, total: 0 }
-      const instance = await modrinth.installModpack(
-        file.url,
-        null,
-        selected.value?.icon_url ?? null,
-        selected.value?.project_id ?? null,
-        version.id,
-      )
+      let instance
+      if (isCf.value) {
+        instance = await curseforge.installModpack(version.project_id, version.id, null)
+      } else {
+        const file = version.files.find(f => f.primary) ?? version.files[0]
+        if (!file) throw new Error(t('modrinth.noFile'))
+        instance = await modrinth.installModpack(
+          file.url,
+          null,
+          selected.value?.icon_url ?? null,
+          selected.value?.project_id ?? null,
+          version.id,
+        )
+      }
       await instances.load()
       toast.add({ title: t('modrinth.installed', { name: instance.name }), color: 'success' })
       cfg.onInstalled?.(instance)
       close()
     } else if (cfg.instanceId) {
-      const added = await modrinth.installWithDeps(
-        cfg.instanceId,
-        version.id,
-        gameVersionValue.value,
-        loaderValue.value,
-      )
-      // Mark installed (incl. dependencies) in the results list.
-      installedIds.value = new Set([...installedIds.value, ...added.map(i => i.project_id)])
-      const deps = added.filter(i => i.dependency).length
-      toast.add({
-        title: deps > 0 ? t('modrinth.installedWithDeps', { name, n: deps }) : t('modrinth.installed', { name }),
-        color: 'success',
-      })
+      if (isCf.value) {
+        const res = await curseforge.installWithDeps(
+          cfg.instanceId,
+          version.project_id,
+          version.id,
+          gameVersionValue.value,
+          loaderValue.value,
+        )
+        installedIds.value = new Set([...installedIds.value, ...res.added.map(i => i.project_id)])
+        if (res.blocked.length) {
+          // Authors blocked third-party download — point the user to the pages.
+          for (const b of res.blocked) {
+            toast.add({
+              title: t('modrinth.blocked', { name: b.name }),
+              color: 'warning',
+              actions: [{ label: t('logs.openLink'), onClick: () => openExternal(b.url) }],
+            })
+          }
+        } else {
+          const deps = res.added.filter(i => i.dependency).length
+          toast.add({
+            title: deps > 0 ? t('modrinth.installedWithDeps', { name, n: deps }) : t('modrinth.installed', { name }),
+            color: 'success',
+          })
+        }
+      } else {
+        const added = await modrinth.installWithDeps(
+          cfg.instanceId,
+          version.id,
+          gameVersionValue.value,
+          loaderValue.value,
+        )
+        // Mark installed (incl. dependencies) in the results list.
+        installedIds.value = new Set([...installedIds.value, ...added.map(i => i.project_id)])
+        const deps = added.filter(i => i.dependency).length
+        toast.add({
+          title: deps > 0 ? t('modrinth.installedWithDeps', { name, n: deps }) : t('modrinth.installed', { name }),
+          color: 'success',
+        })
+      }
       cfg.onInstalled?.()
     }
   } catch (e) {
@@ -525,6 +586,8 @@ function versionTypeColor(type: string) {
 watch(isOpen, async (open) => {
   if (!open || !config.value) return
   const cfg = config.value
+  provider.value = 'modrinth'
+  curseforge.enabled().then(v => (cfEnabled.value = v)).catch(() => (cfEnabled.value = false))
   query.value = cfg.query ?? ''
   sort.value = 'relevance'
   gameVersion.value = cfg.gameVersion ?? ANY
@@ -541,7 +604,26 @@ watch(isOpen, async (open) => {
       mcVersions.value = (await meta.getMinecraftVersions(true)).map(v => v.id)
     } catch { /* keep "any" only */ }
   }
-  modrinth.categories(searchProjectType(cfg.kind)).then(c => (categories.value = c)).catch(() => {})
+  loadCategories()
+  runSearch(false)
+})
+
+function loadCategories() {
+  const k = config.value?.kind ?? 'mod'
+  categories.value = []
+  const p = isCf.value ? curseforge.categories(k) : modrinth.categories(searchProjectType(k))
+  p.then(c => (categories.value = c)).catch(() => { categories.value = [] })
+}
+
+// Switching provider resets results, selection and reloads that provider's chips.
+watch(provider, () => {
+  if (!isOpen.value) return
+  selected.value = null
+  versions.value = []
+  hits.value = []
+  selectedCategories.value = []
+  showFilters.value = false
+  loadCategories()
   runSearch(false)
 })
 

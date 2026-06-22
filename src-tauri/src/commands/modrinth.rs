@@ -224,6 +224,61 @@ pub async fn modrinth_versions(
     resp.json::<Vec<Version>>().await.map_err(|e| e.to_string())
 }
 
+/// Matches a single local jar against Modrinth by sha1 and records it if found.
+/// Returns whether a match was recorded. Used by the provider-choice link dialog.
+#[tauri::command]
+pub async fn modrinth_match_file(instance_id: String, filename: String) -> Result<bool, String> {
+    use sha1::{Digest, Sha1};
+
+    let dir = paths::instance_game_dir(&instance_id).join("mods");
+    let path = if dir.join(&filename).is_file() {
+        dir.join(&filename)
+    } else {
+        dir.join(format!("{filename}.disabled"))
+    };
+    let bytes = std::fs::read(&path).map_err(|e| format!("read {filename}: {e}"))?;
+    let mut hasher = Sha1::new();
+    hasher.update(&bytes);
+    let sha1 = format!("{:x}", hasher.finalize());
+
+    let http = http();
+    let resp = send(
+        http.post(format!("{API}/version_files"))
+            .json(&serde_json::json!({ "hashes": [sha1], "algorithm": "sha1" })),
+    )
+    .await?;
+    if !resp.status().is_success() {
+        return Ok(false);
+    }
+    let versions: HashMap<String, Version> = resp.json().await.map_err(|e| e.to_string())?;
+    let Some(version) = versions.into_values().next() else { return Ok(false) };
+
+    let project = fetch_project(&http, &version.project_id).await.ok();
+    let (kind, _folder) = match &project {
+        Some(p) => kind_and_folder(&version, p),
+        None => ("mod", "mods"),
+    };
+    let mut index = read_content_index(&instance_id);
+    let item = InstalledItem {
+        project_id: version.project_id.clone(),
+        version_id: version.id.clone(),
+        kind: kind.to_string(),
+        name: project.as_ref().map(|p| p.title.clone()).unwrap_or_else(|| filename.clone()),
+        filename: filename.clone(),
+        version_number: version.version_number.clone(),
+        icon_url: project.as_ref().and_then(|p| p.icon_url.clone()),
+        game_versions: version.game_versions.clone(),
+        loaders: version.loaders.clone(),
+        dependency: false,
+        installed_at: chrono::Utc::now().to_rfc3339(),
+        provider: "modrinth".to_string(),
+    };
+    index.items.retain(|i| i.project_id != item.project_id && i.filename != item.filename);
+    index.items.push(item);
+    write_content_index(&instance_id, &index)?;
+    Ok(true)
+}
+
 #[derive(Serialize)]
 pub struct ModUpdate {
     project_id: String,
@@ -245,6 +300,18 @@ pub async fn check_mod_updates(
     let mut out = Vec::new();
 
     for item in index.items.iter().filter(|i| i.kind == "mod") {
+        // CurseForge mods resolve through the CurseForge API instead.
+        if item.provider == "curseforge" {
+            if let Some((vid, vnum)) =
+                crate::commands::curseforge::latest_file(&item.project_id, &loaders, &game_versions).await
+            {
+                if vid != item.version_id {
+                    out.push(ModUpdate { project_id: item.project_id.clone(), version_id: vid, version_number: vnum });
+                }
+            }
+            continue;
+        }
+
         let mut req = http.get(format!("{API}/project/{}/version", item.project_id));
         if let Some(l) = loaders.as_ref().filter(|l| !l.is_empty()) {
             if let Ok(j) = serde_json::to_string(l) {
@@ -317,21 +384,28 @@ pub struct InstalledItem {
     /// Was this auto-installed as a dependency of another project?
     pub dependency: bool,
     pub installed_at: String,
+    /// "modrinth" | "curseforge" — which provider this came from (for updates).
+    #[serde(default = "default_provider")]
+    pub provider: String,
+}
+
+pub fn default_provider() -> String {
+    "modrinth".to_string()
 }
 
 #[derive(Serialize, Deserialize, Default)]
-struct ContentIndex {
-    items: Vec<InstalledItem>,
+pub struct ContentIndex {
+    pub items: Vec<InstalledItem>,
 }
 
-fn read_content_index(instance_id: &str) -> ContentIndex {
+pub fn read_content_index(instance_id: &str) -> ContentIndex {
     store::read_json(&paths::instance_content_index(instance_id))
         .ok()
         .flatten()
         .unwrap_or_default()
 }
 
-fn write_content_index(instance_id: &str, index: &ContentIndex) -> Result<(), String> {
+pub fn write_content_index(instance_id: &str, index: &ContentIndex) -> Result<(), String> {
     store::write_json(&paths::instance_content_index(instance_id), index)
 }
 
@@ -526,6 +600,7 @@ fn install_rec<'a>(
             loaders: version.loaders.clone(),
             dependency: is_dependency,
             installed_at: chrono::Utc::now().to_rfc3339(),
+            provider: "modrinth".to_string(),
         };
         // Replace any existing record for this project, then add.
         index.items.retain(|i| i.project_id != item.project_id);
@@ -668,10 +743,13 @@ pub async fn import_file(
     }
 
     if zip_has_curseforge_manifest(&pack_bytes) {
-        return Err("This is a CurseForge modpack. Import the installed instance from the CurseForge app instead (Import → from a launcher).".into());
+        if crate::commands::curseforge::cf_enabled() {
+            return crate::commands::curseforge::install_modpack_bytes(&app, pack_bytes, name_override, None).await;
+        }
+        return Err("This is a CurseForge modpack — add a CurseForge API key to import it.".into());
     }
 
-    Err("Unrecognized file — expected a Modrinth .mrpack.".into())
+    Err("Unrecognized file — expected a Modrinth .mrpack or CurseForge .zip.".into())
 }
 
 /// True if a zip carries a CurseForge `manifest.json` (their modpack format).
@@ -1129,6 +1207,7 @@ async fn index_modpack_content(
             loaders: version.loaders.clone(),
             dependency: false,
             installed_at: chrono::Utc::now().to_rfc3339(),
+            provider: "modrinth".to_string(),
         };
         index.items.retain(|i| i.project_id != item.project_id);
         index.items.push(item);
@@ -1228,6 +1307,7 @@ pub async fn match_local_mods(instance_id: String) -> Result<usize, String> {
             loaders: version.loaders.clone(),
             dependency: false,
             installed_at: chrono::Utc::now().to_rfc3339(),
+            provider: "modrinth".to_string(),
         };
         index.items.retain(|i| i.project_id != item.project_id && i.filename != item.filename);
         index.items.push(item);

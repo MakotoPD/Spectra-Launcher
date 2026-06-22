@@ -46,6 +46,7 @@
     <ModrinthBrowser />
     <ExportInstanceModal />
     <ExportModListModal />
+    <LinkModsModal />
 	</div>
 </template>
 

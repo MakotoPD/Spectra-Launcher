@@ -304,7 +304,7 @@ type ContentTab = 'screenshots' | 'worlds' | 'resourcepacks' | 'datapacks' | 'sh
 
 const props = defineProps<{ instanceId: string; tab: ContentTab }>()
 const emit = defineEmits<{
-  quickPlay: [payload: { kind: 'Singleplayer'; world: string } | { kind: 'Multiplayer'; host: string }]
+  quickPlay: [payload: { kind: 'Singleplayer'; world: string } | { kind: 'Multiplayer'; host: string; port?: number }]
 }>()
 const { t } = useI18n()
 const browser = useModrinthBrowser()
@@ -397,8 +397,9 @@ function quickPlayWorld(folder: string) {
   emit('quickPlay', { kind: 'Singleplayer', world: folder })
 }
 function quickPlayServer(ip: string) {
-  const [host] = ip.split(':')
-  emit('quickPlay', { kind: 'Multiplayer', host: host ?? ip })
+  const [host, portStr] = ip.split(':')
+  const port = portStr ? Number(portStr) : undefined
+  emit('quickPlay', { kind: 'Multiplayer', host: host ?? ip, port: Number.isFinite(port) ? port : undefined })
 }
 
 // --- servers: add / remove ---

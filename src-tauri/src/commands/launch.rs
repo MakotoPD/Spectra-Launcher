@@ -482,12 +482,16 @@ fn find_latest_crash_report(id: &str, since: std::time::SystemTime) -> Option<St
         if ext != "txt" && ext != "log" {
             continue;
         }
-        let modified = entry.metadata().ok()?.modified().ok()?;
+        let Some(modified) = entry.metadata().ok().and_then(|m| m.modified().ok()) else {
+            continue;
+        };
         if modified < since {
             continue; // older than game start — not caused by this session
         }
         if best.as_ref().map(|(t, _)| modified > *t).unwrap_or(true) {
-            let name = path.file_name()?.to_string_lossy().into_owned();
+            let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+                continue;
+            };
             best = Some((modified, format!("crash-reports/{name}")));
         }
     }

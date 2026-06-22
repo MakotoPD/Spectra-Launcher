@@ -53,6 +53,10 @@ export const useModrinth = () => {
   const matchLocal = (instanceId: string) =>
     invoke<number>('match_local_mods', { instanceId })
 
+  /** Matches one local jar by sha1; returns whether it matched. */
+  const matchFile = (instanceId: string, filename: string) =>
+    invoke<boolean>('modrinth_match_file', { instanceId, filename })
+
   /** Installed mods that have a newer compatible version available. */
   const checkUpdates = (instanceId: string, loaders?: string[], gameVersions?: string[]) =>
     invoke<ModUpdate[]>('check_mod_updates', {
@@ -85,5 +89,5 @@ export const useModrinth = () => {
   const updateModpack = (instanceId: string) =>
     invoke<void>('update_modpack', { instanceId })
 
-  return { search, versions, project, categories, installWithDeps, getInstalled, matchLocal, checkUpdates, installModpack, checkModpackUpdate, updateModpack }
+  return { search, versions, project, categories, installWithDeps, getInstalled, matchLocal, matchFile, checkUpdates, installModpack, checkModpackUpdate, updateModpack }
 }

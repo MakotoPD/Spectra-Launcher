@@ -206,6 +206,18 @@
     "save": "Zapisz",
     "saved": "Lista modów zapisana"
   },
+  "link": {
+    "title": "Łączenie modów",
+    "desc": "Wybierz gdzie sprawdzić każdy lokalny mod.",
+    "file": "Mod {i} z {n}",
+    "provider": "Sprawdź na",
+    "tryOthers": "Spróbuj też drugiego dostawcy",
+    "skip": "Pomiń",
+    "skipAll": "Pomiń wszystko",
+    "confirm": "Potwierdź",
+    "confirmAll": "Potwierdź dla wszystkich",
+    "done": "Połączono {n} mod(ów)"
+  },
   "settings": {
     "title": "Ustawienia",
     "appearance": {
@@ -348,6 +360,7 @@
     "chooseVersion": "Wybierz inną wersję",
     "installedShort": "Zainstalowano",
     "installedWithDeps": "Zainstalowano: {name} (+{n} zależności)",
+    "blocked": "{name}: autor zablokował pobieranie w aplikacjach trzecich — pobierz z CurseForge",
     "tabDescription": "Opis",
     "tabGallery": "Galeria",
     "noGallery": "Brak zdjęć w galerii"
@@ -386,6 +399,8 @@
     "installed": "Zainstalowana",
     "openPage": "Otwórz stronę moda",
     "linkModrinth": "Połącz z Modrinth",
+    "link": "Połącz mody",
+    "linkHint": "Dopasuj lokalne jary do Modrinth i CurseForge",
     "checkModrinth": "Sprawdź na Modrinth",
     "linked": "Połączono {n} mod(ów) z Modrinth",
     "noMatch": "Nie znaleziono na Modrinth"

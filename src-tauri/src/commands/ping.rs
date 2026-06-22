@@ -34,15 +34,16 @@ pub async fn ping_server(host: String, port: Option<u16>) -> Result<PingResult, 
     let port = port.unwrap_or(25565);
     let addr = format!("{host}:{port}");
 
-    let stream = tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        TcpStream::connect(&addr),
-    )
+    // One hard timeout over the whole exchange (connect + handshake + status +
+    // ping), so a server that accepts the socket but never replies can't hang us.
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        let stream = TcpStream::connect(&addr)
+            .await
+            .map_err(|e| format!("connect: {e}"))?;
+        do_ping(stream, &host, port).await
+    })
     .await
     .map_err(|_| "timeout".to_string())?
-    .map_err(|e| format!("connect: {e}"))?;
-
-    do_ping(stream, &host, port).await
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

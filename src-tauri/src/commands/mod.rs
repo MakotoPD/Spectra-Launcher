@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod content;
+pub mod curseforge;
 pub mod import;
 pub mod instances;
 pub mod java;

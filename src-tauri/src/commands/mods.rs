@@ -194,7 +194,7 @@ pub fn list_mods(instance_id: String) -> Result<Vec<ModEntry>, String> {
             version: meta.map(|m| m.version_number.clone()).or(local.version),
             version_id: meta.map(|m| m.version_id.clone()),
             icon_url: meta.and_then(|m| m.icon_url.clone()).or(local.icon),
-            provider: if meta.is_some() { "modrinth".into() } else { "local".into() },
+            provider: meta.map(|m| m.provider.clone()).unwrap_or_else(|| "local".into()),
             project_id: meta.map(|m| m.project_id.clone()),
             enabled,
             filename,

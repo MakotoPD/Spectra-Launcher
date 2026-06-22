@@ -26,8 +26,8 @@
         variant="soft"
         size="sm"
         :loading="linking"
-        :label="$t('mods.linkModrinth')"
-        title="Try to link local mods to Modrinth"
+        :label="$t('mods.link')"
+        :title="$t('mods.linkHint')"
         @click="linkLocal"
       />
       <UButton icon="i-lucide-package-search" size="sm" :label="$t('modrinth.add')" @click="openBrowser" />
@@ -128,7 +128,12 @@
                 @click="openModPage(m)"
               />
             </div>
-            <UBadge color="neutral" variant="subtle" size="xs" class="mt-0.5" :label="$t(`mods.provider.${m.provider}`)" />
+            <span
+              class="inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium mt-0.5"
+              :class="providerBadgeClass(m.provider)"
+            >
+              {{ $t(`mods.provider.${m.provider}`) }}
+            </span>
           </div>
 
           <!-- version -->
@@ -235,8 +240,10 @@ const toast = useToast()
 const { t } = useI18n()
 const browser = useModrinthBrowser()
 const modList = useModListModal()
+const linkModal = useLinkModsModal()
 const instances = useInstancesStore()
 const modrinth = useModrinth()
+const curseforge = useCurseforge()
 const activity = useActivityCenter()
 
 const mods = ref<ModEntry[]>([])
@@ -266,9 +273,23 @@ async function refreshUpdates() {
   }
 }
 
-/** Installs `versionId` for a mod and removes its previous jar. */
+/** Installs `versionId` for a mod and removes its previous jar. Routes to the
+ *  right provider (CurseForge `versionId` is a fileId). */
 async function applyVersion(mod: ModEntry, versionId: string) {
-  const added = await modrinth.installWithDeps(props.instanceId, versionId, filterGv.value?.[0], filterLoaders.value?.[0])
+  let added
+  if (mod.provider === 'curseforge' && mod.project_id) {
+    const res = await curseforge.installWithDeps(props.instanceId, mod.project_id, versionId, filterGv.value?.[0], filterLoaders.value?.[0])
+    added = res.added
+    for (const b of res.blocked) {
+      toast.add({
+        title: t('modrinth.blocked', { name: b.name }),
+        color: 'warning',
+        actions: [{ label: t('logs.openLink'), onClick: () => openUrl(b.url) }],
+      })
+    }
+  } else {
+    added = await modrinth.installWithDeps(props.instanceId, versionId, filterGv.value?.[0], filterLoaders.value?.[0])
+  }
   const fresh = added.find(a => a.project_id === mod.project_id)
   if (fresh && fresh.filename !== mod.filename) {
     await invoke('delete_mod', { instanceId: props.instanceId, filename: mod.filename })
@@ -327,7 +348,9 @@ async function openVersions(mod: ModEntry) {
   modVersions.value = []
   loadingVersions.value = true
   try {
-    modVersions.value = await modrinth.versions(mod.project_id, filterLoaders.value, filterGv.value)
+    modVersions.value = mod.provider === 'curseforge'
+      ? await curseforge.versions(mod.project_id, filterLoaders.value, filterGv.value)
+      : await modrinth.versions(mod.project_id, filterLoaders.value, filterGv.value)
   } catch (e) {
     toast.add({ title: String(e), color: 'error' })
   } finally {
@@ -352,9 +375,14 @@ async function chooseVersion(versionId: string) {
   }
 }
 
-/** Opens a mod's Modrinth page in the external browser. */
+/** Opens a mod's page in the external browser. */
 function openModPage(mod: ModEntry) {
-  if (mod.project_id) openUrl(`https://modrinth.com/mod/${mod.project_id}`)
+  if (!mod.project_id) return
+  if (mod.provider === 'curseforge') {
+    openUrl(`https://www.curseforge.com/projects/${mod.project_id}`)
+  } else {
+    openUrl(`https://modrinth.com/mod/${mod.project_id}`)
+  }
 }
 
 // --- controls ---
@@ -384,6 +412,12 @@ const perPageItems = [10, 25, 50, 100].map(n => ({ label: t('mods.perPage', { n 
 
 const nameOf = (m: ModEntry) => (m.name ?? m.filename).toLowerCase()
 const formatDate = (ms: number) => (ms ? new Date(ms).toLocaleDateString() : '—')
+
+const providerBadgeClass = (provider: string) => {
+  if (provider === 'curseforge') return 'bg-orange-500/10 text-orange-400 ring-1 ring-inset ring-orange-500/25'
+  if (provider === 'modrinth') return 'bg-green-500/10 text-green-400 ring-1 ring-inset ring-green-500/25'
+  return 'bg-neutral-500/10 text-neutral-400 ring-1 ring-inset ring-neutral-500/25'
+}
 
 // Ascending comparator per column; direction is applied afterwards.
 function compare(a: ModEntry, b: ModEntry, col: SortCol): number {
@@ -431,7 +465,12 @@ async function load() {
   void linkAndCheck()
 }
 
-// Link manually-added jars to Modrinth (by hash), then check for updates.
+// Whether a CurseForge API key is configured (enables CF linking).
+const cfEnabled = ref(false)
+curseforge.enabled().then(v => (cfEnabled.value = v)).catch(() => {})
+
+// Auto-link is a quiet best-effort Modrinth pass on load; the manual button
+// opens the per-file provider-choice dialog. Then check for updates.
 async function linkAndCheck() {
   try {
     const matched = await modrinth.matchLocal(props.instanceId)
@@ -445,24 +484,22 @@ async function linkAndCheck() {
 const hasLocal = computed(() => mods.value.some(m => !m.project_id))
 const linking = ref(false)
 
-/** Manual: link local jars to Modrinth by hash, with feedback. */
-async function linkLocal() {
-  linking.value = true
-  const tid = activity.startTask(t('activity.linking'))
-  try {
-    const matched = await modrinth.matchLocal(props.instanceId)
-    mods.value = await invoke<ModEntry[]>('list_mods', { instanceId: props.instanceId })
-    toast.add({
-      title: matched > 0 ? t('mods.linked', { n: matched }) : t('mods.noMatch'),
-      color: matched > 0 ? 'success' : 'neutral',
-    })
-    refreshUpdates()
-  } catch (e) {
-    toast.add({ title: String(e), color: 'error' })
-  } finally {
-    activity.endTask(tid)
-    linking.value = false
+/** Manual: open the per-file provider-choice dialog for unmatched local jars. */
+function linkLocal() {
+  const files = mods.value.filter(m => !m.project_id).map(m => m.filename)
+  if (!files.length) {
+    toast.add({ title: t('mods.noMatch'), color: 'neutral' })
+    return
   }
+  linkModal.open({
+    instanceId: props.instanceId,
+    files,
+    cfEnabled: cfEnabled.value,
+    onDone: async () => {
+      mods.value = await invoke<ModEntry[]>('list_mods', { instanceId: props.instanceId })
+      refreshUpdates()
+    },
+  })
 }
 
 async function toggle(mod: ModEntry, enabled: boolean) {

@@ -205,6 +205,18 @@
     "save": "Save",
     "saved": "Mod list saved"
   },
+  "link": {
+    "title": "Link mods",
+    "desc": "Pick where to look up each local mod.",
+    "file": "Mod {i} of {n}",
+    "provider": "Look up on",
+    "tryOthers": "Also try the other provider",
+    "skip": "Skip",
+    "skipAll": "Skip all",
+    "confirm": "Confirm",
+    "confirmAll": "Confirm all",
+    "done": "Linked {n} mod(s)"
+  },
   "settings": {
     "title": "Settings",
     "appearance": {
@@ -347,6 +359,7 @@
     "chooseVersion": "Choose another version",
     "installedShort": "Installed",
     "installedWithDeps": "Installed: {name} (+{n} dependencies)",
+    "blocked": "{name}: the author blocked third-party download — get it from CurseForge",
     "tabDescription": "Description",
     "tabGallery": "Gallery",
     "noGallery": "No gallery images"
@@ -385,6 +398,8 @@
     "installed": "Installed",
     "openPage": "Open mod page",
     "linkModrinth": "Link with Modrinth",
+    "link": "Link mods",
+    "linkHint": "Match local jars to Modrinth and CurseForge",
     "checkModrinth": "Check on Modrinth",
     "linked": "Linked {n} mod(s) with Modrinth",
     "noMatch": "No match found on Modrinth"
