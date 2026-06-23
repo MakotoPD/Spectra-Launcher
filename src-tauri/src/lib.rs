@@ -136,6 +136,10 @@ pub fn run() {
             commands::curseforge::curseforge_match_file,
             commands::curseforge::curseforge_install_modpack,
             commands::curseforge::curseforge_import_modpack_file,
+            commands::curseforge::export_curseforge,
+            commands::curseforge::get_blocked_mods,
+            commands::curseforge::resolve_blocked_mods,
+            commands::curseforge::default_downloads_dir,
             // Import / export
             commands::import::detect_external_instances,
             commands::import::import_external_instance,

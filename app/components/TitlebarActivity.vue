@@ -61,7 +61,12 @@ const view = computed<View>(() => {
   const top = ac.top.value
   const labels = ac.taskLabels.value
 
-  // 1) downloads (with %), 2) ad-hoc operations, 3) game running, 4) idle.
+  // 0) modpack download (with %), 1) instance downloads, 2) ad-hoc ops, 3) running, 4) idle.
+  const mp = ac.modpack.value
+  if (mp) {
+    const percent = mp.total > 0 ? Math.min(100, Math.round((mp.current / mp.total) * 100)) : null
+    return { kind: 'install', label: t('activity.downloadingPack', { name: mp.name }), percent }
+  }
   if (top?.kind === 'install') {
     const percent = top.total > 0 ? Math.min(100, Math.round((top.current / top.total) * 100)) : null
     return { kind: 'install', label: t('activity.downloading', { name: nameFor(top.instanceId) }), percent }

@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Instance } from '~/types/launcher'
+import type { Instance, BlockedMod } from '~/types/launcher'
 import type {
   ModrinthSearchParams,
   ModrinthSearchResponse,
@@ -8,13 +8,6 @@ import type {
   ModrinthCategory,
   InstalledItem,
 } from '~/types/modrinth'
-
-/** A mod CurseForge refuses to serve to third-party launchers (mirrors BlockedMod). */
-export interface BlockedMod {
-  name: string
-  file_id: string
-  url: string
-}
 
 export interface CfInstallResult {
   added: InstalledItem[]
@@ -68,6 +61,10 @@ export const useCurseforge = () => {
   const matchFile = (instanceId: string, filename: string) =>
     invoke<boolean>('curseforge_match_file', { instanceId, filename })
 
+  /** Mods blocked from third-party download, awaiting manual fetch. */
+  const getBlocked = (instanceId: string) =>
+    invoke<BlockedMod[]>('get_blocked_mods', { instanceId })
+
   /** Creates a new instance from a CurseForge modpack (by project + file id). */
   const installModpack = (projectId: string, fileId: string, nameOverride?: string | null) =>
     invoke<Instance>('curseforge_install_modpack', {
@@ -76,5 +73,5 @@ export const useCurseforge = () => {
       nameOverride: nameOverride ?? null,
     })
 
-  return { enabled, search, versions, project, categories, installWithDeps, matchLocal, matchFile, installModpack }
+  return { enabled, search, versions, project, categories, installWithDeps, matchLocal, matchFile, getBlocked, installModpack }
 }

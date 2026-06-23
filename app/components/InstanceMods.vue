@@ -30,6 +30,15 @@
         :title="$t('mods.linkHint')"
         @click="linkLocal"
       />
+      <UButton
+        v-if="blockedCount"
+        icon="i-lucide-file-warning"
+        color="warning"
+        variant="soft"
+        size="sm"
+        :label="$t('blocked.resolve', { n: blockedCount })"
+        @click="openBlocked"
+      />
       <UButton icon="i-lucide-package-search" size="sm" :label="$t('modrinth.add')" @click="openBrowser" />
       <UButton
         v-if="mods.length"
@@ -241,6 +250,7 @@ const { t } = useI18n()
 const browser = useModrinthBrowser()
 const modList = useModListModal()
 const linkModal = useLinkModsModal()
+const blockedModal = useBlockedModsModal()
 const instances = useInstancesStore()
 const modrinth = useModrinth()
 const curseforge = useCurseforge()
@@ -463,11 +473,22 @@ async function load() {
     loading.value = false
   }
   void linkAndCheck()
+  void loadBlocked()
 }
 
 // Whether a CurseForge API key is configured (enables CF linking).
 const cfEnabled = ref(false)
 curseforge.enabled().then(v => (cfEnabled.value = v)).catch(() => {})
+
+// CurseForge mods blocked from auto-download, awaiting manual fetch.
+const blockedCount = ref(0)
+async function loadBlocked() {
+  try { blockedCount.value = (await curseforge.getBlocked(props.instanceId)).length }
+  catch { blockedCount.value = 0 }
+}
+function openBlocked() {
+  blockedModal.open(props.instanceId, () => { load(); loadBlocked() })
+}
 
 // Auto-link is a quiet best-effort Modrinth pass on load; the manual button
 // opens the per-file provider-choice dialog. Then check for updates.

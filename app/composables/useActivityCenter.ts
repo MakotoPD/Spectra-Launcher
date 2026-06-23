@@ -1,5 +1,5 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import type { MultiProgress, ConsoleLine, ExitInfo, CrashInfo } from '~/types/launcher'
+import type { MultiProgress, ConsoleLine, ExitInfo, CrashInfo, ModpackProgress } from '~/types/launcher'
 
 /** A single thing happening for an instance, surfaced in the titlebar. */
 export interface Activity {
@@ -32,6 +32,8 @@ export const useActivityCenter = () => {
   const logs = useState<Record<string, string[]>>('mc-logs', () => ({}))
   // Crash info per instance — set when mc://crashed fires, cleared on dismiss.
   const crashes = useState<Record<string, CrashInfo>>('mc-crashes', () => ({}))
+  // Live modpack download progress (shown in the titlebar), or null when idle.
+  const modpack = useState<{ name: string, current: number, total: number } | null>('mc-modpack', () => null)
   // Ad-hoc frontend-driven operations (mod/modpack install/update, …) → label.
   const tasks = useState<Record<string, string>>('mc-tasks', () => ({}))
 
@@ -97,6 +99,16 @@ export const useActivityCenter = () => {
             crashInstance.value = iid
             crashOpen.value = true
           }),
+          await listen<ModpackProgress>('modrinth://modpack-progress', (e) => {
+            const { name, current, total } = e.payload
+            modpack.value = { name, current, total }
+            // Clear shortly after the downloads finish (overrides extract after).
+            if (total > 0 && current >= total) {
+              setTimeout(() => {
+                if (modpack.value && modpack.value.current >= modpack.value.total) modpack.value = null
+              }, 1500)
+            }
+          }),
         )
       })()
     }
@@ -154,5 +166,5 @@ export const useActivityCenter = () => {
     crashes.value = next
   }
 
-  return { activities, logs, tasks, taskLabels, startTask, endTask, withTask, attach, detach, list, top, activityFor, logsFor, clear, clearLog, markRunning, liveLogsOpen, liveLogsInstance, openLiveLogs, crashOpen, crashInstance, crashFor, clearCrash }
+  return { activities, logs, tasks, taskLabels, startTask, endTask, withTask, attach, detach, list, top, activityFor, logsFor, clear, clearLog, markRunning, modpack, liveLogsOpen, liveLogsInstance, openLiveLogs, crashOpen, crashInstance, crashFor, clearCrash }
 }

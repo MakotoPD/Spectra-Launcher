@@ -8,7 +8,7 @@
 //! Reference: https://docs.curseforge.com/  (and PrismLauncher's Flame impl).
 
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -124,6 +124,13 @@ struct CfCategoryRef {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CfLinks {
+    #[serde(default)]
+    website_url: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct CfFileIndex {
     #[serde(default)]
     game_version: String,
@@ -142,6 +149,8 @@ struct CfMod {
     download_count: f64,
     #[serde(default)]
     logo: Option<CfLogo>,
+    #[serde(default)]
+    links: Option<CfLinks>,
     #[serde(default)]
     authors: Vec<CfAuthor>,
     #[serde(default)]
@@ -196,6 +205,8 @@ struct CfFile {
     file_length: u64,
     #[serde(default)]
     file_fingerprint: u64,
+    #[serde(default = "default_true")]
+    is_available: bool,
     #[serde(default)]
     download_count: f64,
     #[serde(default = "default_release_type")]
@@ -210,6 +221,9 @@ struct CfFile {
 
 fn default_release_type() -> i64 {
     1
+}
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
@@ -598,11 +612,16 @@ pub async fn curseforge_categories(project_type: String) -> Result<Vec<Category>
 /// A mod that couldn't be downloaded because its author disabled third-party
 /// distribution (CurseForge returns no download URL). The user must grab it
 /// manually from the project page.
-#[derive(Serialize, Clone)]
+/// A file CurseForge won't serve to third-party launchers. The user downloads it
+/// manually from `url`; we then match it back by `fingerprint` and copy it in.
+#[derive(Serialize, Deserialize, Clone)]
 pub struct BlockedMod {
     name: String,
+    filename: String,
+    project_id: String,
     file_id: String,
     url: String,
+    fingerprint: u64,
 }
 
 #[derive(Serialize)]
@@ -640,6 +659,16 @@ pub async fn curseforge_install_with_deps(
     .await?;
 
     write_content_index(&instance_id, &index)?;
+    // Persist any blocked mods (merged) so they can be resolved later.
+    if !blocked.is_empty() {
+        let mut all = get_blocked_mods(instance_id.clone());
+        for b in &blocked {
+            if !all.iter().any(|x| x.file_id == b.file_id) {
+                all.push(b.clone());
+            }
+        }
+        save_blocked_mods(&instance_id, &all);
+    }
     Ok(CfInstallResult { added, blocked })
 }
 
@@ -676,9 +705,12 @@ fn install_rec<'a>(
             _ => {
                 // Author opted out of third-party distribution — report it.
                 blocked.push(BlockedMod {
-                    name: file.file_name.clone(),
+                    name: m.name.clone(),
+                    filename: safe_name(&file.file_name),
+                    project_id: project_id.to_string(),
                     file_id: file_id.to_string(),
-                    url: format!("https://www.curseforge.com/minecraft/mc-mods/{}/download/{}", m.slug, file_id),
+                    url: blocked_url(Some(&m), m.id, file.id),
+                    fingerprint: file.file_fingerprint,
                 });
                 visited.insert(project_id.to_string());
                 return Ok(());
@@ -1061,6 +1093,7 @@ struct CfManifestFile {
 
 #[derive(Clone, Serialize)]
 struct ModpackProgress {
+    instance_id: String,
     current: u64,
     total: u64,
     name: String,
@@ -1149,50 +1182,89 @@ pub(crate) async fn install_modpack_bytes(
     let mods = bulk_mods(&mod_ids).await.unwrap_or_default();
 
     let game_dir = paths::instance_game_dir(&instance.id);
-    let total = manifest.files.len() as u64;
-    let mut blocked: Vec<String> = Vec::new();
-    let mut index = read_content_index(&instance.id);
+    let mods_dir = game_dir.join("mods");
+    std::fs::create_dir_all(&mods_dir).map_err(|e| e.to_string())?;
+    let mut blocked: Vec<BlockedMod> = Vec::new();
 
-    for (i, f) in manifest.files.iter().enumerate() {
-        let _ = app.emit(
-            "modrinth://modpack-progress",
-            ModpackProgress { current: i as u64 + 1, total, name: instance.name.clone() },
-        );
+    // Plan downloads (and collect blocked mods) before fetching, so we can run
+    // the downloads concurrently.
+    struct Job {
+        url: String,
+        dest: PathBuf,
+        item: InstalledItem,
+    }
+    let mut jobs: Vec<Job> = Vec::new();
+    for f in &manifest.files {
         let Some(file) = resolved.get(&f.file_id) else { continue };
         let cf_mod = mods.get(&file.mod_id);
         let (kind, _folder) = cf_mod.map(kind_and_folder).unwrap_or(("mod", "mods"));
 
-        let folder = "mods"; // CF modpack files are mods; overrides carry the rest.
         let url = match &file.download_url {
             Some(u) if !u.is_empty() => u.clone(),
             _ => {
-                blocked.push(file.file_name.clone());
+                // Author blocked third-party download — record it for manual fetch.
+                blocked.push(BlockedMod {
+                    name: cf_mod.map(|m| m.name.clone()).unwrap_or_else(|| file.file_name.clone()),
+                    filename: safe_name(&file.file_name),
+                    project_id: file.mod_id.to_string(),
+                    file_id: file.id.to_string(),
+                    url: blocked_url(cf_mod, file.mod_id, file.id),
+                    fingerprint: file.file_fingerprint,
+                });
                 continue;
             }
         };
-        let dir = game_dir.join(folder);
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        let mut dest = dir.join(safe_name(&file.file_name));
+        let mut dest = mods_dir.join(safe_name(&file.file_name));
         if !f.required {
             dest.set_extension(format!("{}.disabled", dest.extension().and_then(|e| e.to_str()).unwrap_or("jar")));
         }
-        if let Ok(data) = download(&url).await {
-            let _ = std::fs::write(&dest, &data);
-            let (game_versions, loaders) = split_game_versions(&file.game_versions);
-            index.items.push(InstalledItem {
-                project_id: file.mod_id.to_string(),
-                version_id: file.id.to_string(),
-                kind: kind.to_string(),
-                name: cf_mod.map(|m| m.name.clone()).unwrap_or_else(|| safe_name(&file.file_name)),
-                filename: safe_name(&file.file_name),
-                version_number: if file.display_name.is_empty() { file.file_name.clone() } else { file.display_name.clone() },
-                icon_url: cf_mod.and_then(|m| logo_url(&m.logo)),
-                game_versions,
-                loaders,
-                dependency: false,
-                installed_at: chrono::Utc::now().to_rfc3339(),
-                provider: "curseforge".to_string(),
-            });
+        let (game_versions, loaders) = split_game_versions(&file.game_versions);
+        let item = InstalledItem {
+            project_id: file.mod_id.to_string(),
+            version_id: file.id.to_string(),
+            kind: kind.to_string(),
+            name: cf_mod.map(|m| m.name.clone()).unwrap_or_else(|| safe_name(&file.file_name)),
+            filename: safe_name(&file.file_name),
+            version_number: if file.display_name.is_empty() { file.file_name.clone() } else { file.display_name.clone() },
+            icon_url: cf_mod.and_then(|m| logo_url(&m.logo)),
+            game_versions,
+            loaders,
+            dependency: false,
+            installed_at: chrono::Utc::now().to_rfc3339(),
+            provider: "curseforge".to_string(),
+        };
+        jobs.push(Job { url, dest, item });
+    }
+
+    // Download concurrently (bounded) and collect the successfully-installed items.
+    let total = jobs.len() as u64;
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(10));
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut set = tokio::task::JoinSet::new();
+    for job in jobs {
+        let sem = sem.clone();
+        let done = done.clone();
+        let app = app.clone();
+        let id = instance.id.clone();
+        let name = instance.name.clone();
+        set.spawn(async move {
+            let _permit = sem.acquire_owned().await.ok()?;
+            let ok = match download(&job.url).await {
+                Ok(data) => std::fs::write(&job.dest, &data).is_ok(),
+                Err(e) => {
+                    log::warn!("modpack file failed ({}): {e}", job.item.filename);
+                    false
+                }
+            };
+            let current = done.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            let _ = app.emit("modrinth://modpack-progress", ModpackProgress { instance_id: id, current, total, name });
+            ok.then_some(job.item)
+        });
+    }
+    let mut index = read_content_index(&instance.id);
+    while let Some(res) = set.join_next().await {
+        if let Ok(Some(item)) = res {
+            index.items.push(item);
         }
     }
 
@@ -1203,10 +1275,151 @@ pub(crate) async fn install_modpack_bytes(
     // Keep the manifest for reference.
     let _ = std::fs::write(paths::instance_dir(&instance.id).join("manifest.json"), raw_manifest);
 
-    if !blocked.is_empty() {
-        log::warn!("CurseForge modpack: {} blocked file(s) not downloaded", blocked.len());
-    }
+    // Persist blocked mods so the UI can guide the user to download them manually.
+    save_blocked_mods(&instance.id, &blocked);
     Ok(instance)
+}
+
+/// Builds a CurseForge download page URL for a blocked file.
+fn blocked_url(cf_mod: Option<&CfMod>, mod_id: i64, file_id: i64) -> String {
+    if let Some(m) = cf_mod {
+        if let Some(w) = m.links.as_ref().and_then(|l| l.website_url.clone()).filter(|s| !s.is_empty()) {
+            return format!("{}/files/{}", w.trim_end_matches('/'), file_id);
+        }
+        if !m.slug.is_empty() {
+            return format!("https://www.curseforge.com/minecraft/mc-mods/{}/files/{}", m.slug, file_id);
+        }
+    }
+    format!("https://www.curseforge.com/projects/{mod_id}")
+}
+
+fn blocked_mods_file(id: &str) -> PathBuf {
+    paths::instance_dir(id).join("blocked-mods.json")
+}
+
+fn save_blocked_mods(id: &str, blocked: &[BlockedMod]) {
+    let path = blocked_mods_file(id);
+    if blocked.is_empty() {
+        let _ = std::fs::remove_file(&path);
+        return;
+    }
+    if let Ok(json) = serde_json::to_vec_pretty(blocked) {
+        let _ = std::fs::write(&path, json);
+    }
+}
+
+/// The blocked mods still awaiting manual download for an instance.
+#[tauri::command]
+pub fn get_blocked_mods(instance_id: String) -> Vec<BlockedMod> {
+    std::fs::read_to_string(blocked_mods_file(&instance_id))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+#[derive(Serialize)]
+pub struct BlockedResolveResult {
+    resolved: usize,
+    remaining: Vec<BlockedMod>,
+}
+
+/// Scans `dir` (defaults to the OS Downloads folder) for files matching the
+/// instance's blocked mods (by CurseForge fingerprint) and copies matches into
+/// the mods folder. Returns how many were resolved and what's still missing.
+#[tauri::command]
+pub fn resolve_blocked_mods(instance_id: String, dir: Option<String>) -> Result<BlockedResolveResult, String> {
+    let mut blocked = get_blocked_mods(instance_id.clone());
+    if blocked.is_empty() {
+        return Ok(BlockedResolveResult { resolved: 0, remaining: vec![] });
+    }
+    let scan_dir = dir
+        .map(PathBuf::from)
+        .or_else(dirs::download_dir)
+        .ok_or("no downloads folder found")?;
+
+    let mods_dir = paths::instance_game_dir(&instance_id).join("mods");
+    std::fs::create_dir_all(&mods_dir).map_err(|e| e.to_string())?;
+
+    let mut resolved = 0usize;
+    let mut index = read_content_index(&instance_id);
+    // Collect candidate files (shallow recursive) whose name plausibly matches,
+    // then confirm by fingerprint — avoids hashing the whole Downloads folder.
+    let candidates = scan_candidate_files(&scan_dir, &blocked, 2);
+    for path in candidates {
+        if blocked.is_empty() {
+            break;
+        }
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        let fp = cf_fingerprint(&bytes) as u64;
+        if let Some(pos) = blocked.iter().position(|b| b.fingerprint == fp) {
+            let b = blocked.remove(pos);
+            let _ = std::fs::write(mods_dir.join(safe_name(&b.filename)), &bytes);
+            // Record it as a CurseForge mod so it shows correctly and gets updates.
+            index.items.retain(|i| i.filename != b.filename && i.project_id != b.project_id);
+            index.items.push(InstalledItem {
+                project_id: b.project_id.clone(),
+                version_id: b.file_id.clone(),
+                kind: "mod".to_string(),
+                name: b.name.clone(),
+                filename: b.filename.clone(),
+                version_number: b.name.clone(),
+                icon_url: None,
+                game_versions: vec![],
+                loaders: vec![],
+                dependency: false,
+                installed_at: chrono::Utc::now().to_rfc3339(),
+                provider: "curseforge".to_string(),
+            });
+            resolved += 1;
+        }
+    }
+
+    if resolved > 0 {
+        let _ = write_content_index(&instance_id, &index);
+    }
+    save_blocked_mods(&instance_id, &blocked);
+    Ok(BlockedResolveResult { resolved, remaining: blocked })
+}
+
+/// The OS Downloads directory, if any (for the blocked-mods scan default).
+#[tauri::command]
+pub fn default_downloads_dir() -> Option<String> {
+    dirs::download_dir().map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Recursively (bounded depth) gathers .jar/.zip files whose normalized name
+/// matches one of the blocked filenames.
+fn scan_candidate_files(dir: &Path, blocked: &[BlockedMod], depth: u32) -> Vec<PathBuf> {
+    let wanted: std::collections::HashSet<String> =
+        blocked.iter().map(|b| normalize_name(&b.filename)).collect();
+    let mut out = Vec::new();
+    collect_candidates(dir, &wanted, depth, &mut out);
+    out
+}
+
+fn collect_candidates(dir: &Path, wanted: &std::collections::HashSet<String>, depth: u32, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let path = e.path();
+        if path.is_dir() {
+            if depth > 0 {
+                collect_candidates(&path, wanted, depth - 1, out);
+            }
+            continue;
+        }
+        let name = e.file_name().to_string_lossy().to_lowercase();
+        if !(name.ends_with(".jar") || name.ends_with(".zip")) {
+            continue;
+        }
+        if wanted.contains(&normalize_name(&e.file_name().to_string_lossy())) {
+            out.push(path);
+        }
+    }
+}
+
+/// Lowercase, strip separators — lax filename compare (like PrismLauncher).
+fn normalize_name(name: &str) -> String {
+    name.to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric()).collect()
 }
 
 async fn bulk_files(file_ids: &[i64]) -> Result<HashMap<i64, CfFile>, String> {
@@ -1255,6 +1468,205 @@ fn extract_overrides(bytes: &[u8], game_dir: &Path) -> Result<(), String> {
         let mut buf = Vec::new();
         entry.read_to_end(&mut buf).map_err(|e| e.to_string())?;
         std::fs::write(&dest, &buf).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// ===== export instance to a CurseForge .zip =====
+
+#[derive(Serialize)]
+struct CfExportManifest {
+    #[serde(rename = "manifestType")]
+    manifest_type: &'static str,
+    #[serde(rename = "manifestVersion")]
+    manifest_version: u32,
+    name: String,
+    version: String,
+    author: String,
+    overrides: &'static str,
+    minecraft: CfExportMc,
+    files: Vec<CfExportFile>,
+}
+
+#[derive(Serialize)]
+struct CfExportMc {
+    version: String,
+    #[serde(rename = "modLoaders")]
+    mod_loaders: Vec<CfExportLoader>,
+}
+
+#[derive(Serialize)]
+struct CfExportLoader {
+    id: String,
+    primary: bool,
+}
+
+#[derive(Serialize)]
+struct CfExportFile {
+    #[serde(rename = "projectID")]
+    project_id: i64,
+    #[serde(rename = "fileID")]
+    file_id: i64,
+    required: bool,
+}
+
+/// Builds the `modLoaders` id for the manifest (e.g. "fabric-0.15.0").
+fn export_loader_id(loader: &Loader, mc: &str) -> Option<String> {
+    match loader {
+        Loader::Fabric(v) => Some(format!("fabric-{v}")),
+        Loader::Quilt(v) => Some(format!("quilt-{v}")),
+        Loader::Forge(v) => Some(format!("forge-{v}")),
+        // CurseForge expects the MC version embedded for NeoForge 1.20.1.
+        Loader::NeoForge(v) if mc == "1.20.1" => Some(format!("neoforge-1.20.1-{v}")),
+        Loader::NeoForge(v) => Some(format!("neoforge-{v}")),
+        Loader::Vanilla => None,
+    }
+}
+
+/// Exports an instance as a CurseForge `.zip` (manifest.json + overrides). Mods/
+/// resource packs that resolve to CurseForge (by fingerprint, and that allow
+/// third-party download) go into the manifest; everything else among the
+/// selected entries is bundled under `overrides/`.
+#[tauri::command]
+pub async fn export_curseforge(
+    id: String,
+    dest: String,
+    version: Option<String>,
+    author: Option<String>,
+    exclude: Vec<String>,
+    optional_disabled: bool,
+) -> Result<(), String> {
+    let instance: Instance =
+        crate::store::read_json(&paths::instance_config_file(&id))?.ok_or("instance not found")?;
+    let game_dir = paths::instance_game_dir(&id);
+    let excluded: std::collections::HashSet<String> = exclude.into_iter().collect();
+
+    // Hash candidate content (mods/resource packs/shaders) by CF fingerprint.
+    struct Cand {
+        rel: String,
+        disabled: bool,
+        fp: u64,
+    }
+    let mut cands: Vec<Cand> = Vec::new();
+    for sub in ["mods", "resourcepacks", "shaderpacks"] {
+        let Ok(entries) = std::fs::read_dir(game_dir.join(sub)) else { continue };
+        for e in entries.flatten() {
+            let path = e.path();
+            if !path.is_file() {
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().into_owned();
+            let disabled = name.ends_with(".disabled");
+            if disabled && !optional_disabled {
+                continue;
+            }
+            let rel = format!("{sub}/{name}");
+            if crate::commands::import::is_excluded(&rel, &excluded) {
+                continue;
+            }
+            if let Ok(bytes) = std::fs::read(&path) {
+                cands.push(Cand { rel, disabled, fp: cf_fingerprint(&bytes) as u64 });
+            }
+        }
+    }
+
+    // Resolve fingerprints → manifest entries; matched files leave the overrides.
+    let mut files: Vec<CfExportFile> = Vec::new();
+    let mut matched: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if !cands.is_empty() {
+        let fingerprints: Vec<u64> = cands.iter().map(|c| c.fp).collect();
+        let resp = send(
+            http()
+                .post(format!("{API}/fingerprints"))
+                .json(&serde_json::json!({ "fingerprints": fingerprints })),
+        )
+        .await?;
+        if resp.status().is_success() {
+            if let Ok(parsed) = resp.json::<CfFingerprintResponse>().await {
+                for m in parsed.data.exact_matches {
+                    let file = m.file;
+                    if !file.is_available {
+                        continue; // not distributable → bundle the jar in overrides
+                    }
+                    let Some(cand) = cands.iter().find(|c| c.fp == file.file_fingerprint) else { continue };
+                    files.push(CfExportFile {
+                        project_id: file.mod_id,
+                        file_id: file.id,
+                        required: !(cand.disabled && optional_disabled),
+                    });
+                    matched.insert(cand.rel.clone());
+                }
+            }
+        }
+    }
+
+    let mod_loaders = export_loader_id(&instance.loader, &instance.mc_version)
+        .map(|id| vec![CfExportLoader { id, primary: true }])
+        .unwrap_or_default();
+
+    let manifest = CfExportManifest {
+        manifest_type: "minecraftModpack",
+        manifest_version: 1,
+        name: instance.name.clone(),
+        version: version.filter(|v| !v.trim().is_empty()).unwrap_or_else(|| "1.0.0".into()),
+        author: author.unwrap_or_default(),
+        overrides: "overrides",
+        minecraft: CfExportMc { version: instance.mc_version.clone(), mod_loaders },
+        files,
+    };
+
+    let out = std::fs::File::create(&dest).map_err(|e| format!("create {dest}: {e}"))?;
+    let mut zip = zip::ZipWriter::new(out);
+    let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+    let json = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
+    zip.start_file("manifest.json", opts).map_err(|e| e.to_string())?;
+    zip.write_all(&json).map_err(|e| e.to_string())?;
+
+    cf_add_overrides(&mut zip, &game_dir, "", &excluded, &matched, optional_disabled, opts)?;
+
+    zip.finish().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Walks the game dir adding files under `overrides/`, honoring the exclude set,
+/// skipping regenerable folders, junk, manifest-referenced files and (unless
+/// `optional_disabled`) disabled mods.
+fn cf_add_overrides(
+    zip: &mut zip::ZipWriter<std::fs::File>,
+    base: &Path,
+    rel: &str,
+    excluded: &std::collections::HashSet<String>,
+    matched: &std::collections::HashSet<String>,
+    optional_disabled: bool,
+    opts: zip::write::SimpleFileOptions,
+) -> Result<(), String> {
+    let dir = if rel.is_empty() { base.to_path_buf() } else { base.join(rel) };
+    let Ok(entries) = std::fs::read_dir(&dir) else { return Ok(()) };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if rel.is_empty() && crate::commands::import::is_never_top(&name) {
+            continue;
+        }
+        let child_rel = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+        if crate::commands::import::is_excluded(&child_rel, excluded) {
+            continue;
+        }
+        let path = e.path();
+        if path.is_dir() {
+            cf_add_overrides(zip, base, &child_rel, excluded, matched, optional_disabled, opts)?;
+            continue;
+        }
+        let lower = name.to_lowercase();
+        if matched.contains(&child_rel) || lower == ".ds_store" || lower == "thumbs.db" || lower.ends_with(".pw.toml") {
+            continue;
+        }
+        if child_rel.ends_with(".disabled") && !optional_disabled {
+            continue;
+        }
+        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+        zip.start_file(format!("overrides/{child_rel}"), opts).map_err(|e| e.to_string())?;
+        zip.write_all(&bytes).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

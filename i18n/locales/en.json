@@ -178,6 +178,8 @@
     "title": "Export {name}",
     "format": "Format",
     "mrpackDesc": "Share on Modrinth or open in any launcher.",
+    "cfDesc": "Share on CurseForge or import elsewhere.",
+    "author": "Author",
     "backup": "Backup (.zip)",
     "backupDesc": "Full local backup, restorable in Mako.",
     "version": "Pack version",
@@ -204,6 +206,19 @@
     "count": "{n} mods",
     "save": "Save",
     "saved": "Mod list saved"
+  },
+  "blocked": {
+    "title": "Mods to download manually",
+    "desc": "These mods' authors don't allow third-party downloads. Download each one, then drop it in your downloads folder — it will be added automatically.",
+    "download": "Download",
+    "watching": "Watching for downloads…",
+    "chooseFolder": "Choose folder",
+    "rescan": "Rescan",
+    "resolve": "Blocked ({n})",
+    "resolved": "Added {n} mod(s)",
+    "allDone": "All mods added!",
+    "progress": "{done} / {total} added",
+    "later": "Later"
   },
   "link": {
     "title": "Link mods",
@@ -286,6 +301,7 @@
   "activity": {
     "idle": "No instance running",
     "downloading": "Downloading {name}",
+    "downloadingPack": "Downloading {name}",
     "running": "{name} is running",
     "unknownInstance": "Instance",
     "tasks": "{n} operations…",

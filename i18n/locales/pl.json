@@ -179,6 +179,8 @@
     "title": "Eksport: {name}",
     "format": "Format",
     "mrpackDesc": "Udostępnij na Modrinth lub otwórz w dowolnym launcherze.",
+    "cfDesc": "Udostępnij na CurseForge lub zaimportuj gdzie indziej.",
+    "author": "Autor",
     "backup": "Backup (.zip)",
     "backupDesc": "Pełna kopia lokalna, przywracalna w Mako.",
     "version": "Wersja paczki",
@@ -205,6 +207,19 @@
     "count": "{n} modów",
     "save": "Zapisz",
     "saved": "Lista modów zapisana"
+  },
+  "blocked": {
+    "title": "Mody do pobrania ręcznie",
+    "desc": "Autorzy tych modów nie zezwalają na pobieranie w aplikacjach trzecich. Pobierz każdy, a po zapisaniu w folderze pobierania zostanie dodany automatycznie.",
+    "download": "Pobierz",
+    "watching": "Obserwuję pobierania…",
+    "chooseFolder": "Wybierz folder",
+    "rescan": "Skanuj ponownie",
+    "resolve": "Zablokowane ({n})",
+    "resolved": "Dodano {n} mod(ów)",
+    "allDone": "Wszystkie mody dodane!",
+    "progress": "{done} / {total} dodane",
+    "later": "Później"
   },
   "link": {
     "title": "Łączenie modów",
@@ -287,6 +302,7 @@
   "activity": {
     "idle": "Żadna instancja nie jest włączona",
     "downloading": "Pobieranie {name}",
+    "downloadingPack": "Pobieranie paczki {name}",
     "running": "{name} jest uruchomiona",
     "unknownInstance": "Instancja",
     "tasks": "{n} operacji…",

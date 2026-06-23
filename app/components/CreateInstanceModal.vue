@@ -187,6 +187,8 @@ const { isOpen, close } = useCreateInstanceModal()
 const instances = useInstancesStore()
 const meta = useMinecraftMeta()
 const browser = useModrinthBrowser()
+const curseforge = useCurseforge()
+const blockedModal = useBlockedModsModal()
 const activity = useActivityCenter()
 const router = useRouter()
 const { t } = useI18n()
@@ -230,6 +232,9 @@ async function importFile() {
       await instances.load()
       close()
       router.push(`/instance/${instance.id}`)
+      // A CurseForge pack may include mods blocked from auto-download.
+      const blocked = await curseforge.getBlocked(instance.id)
+      if (blocked.length) blockedModal.open(instance.id)
     } finally {
       activity.endTask(tid)
       importingFile.value = false

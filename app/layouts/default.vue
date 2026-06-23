@@ -47,6 +47,7 @@
     <ExportInstanceModal />
     <ExportModListModal />
     <LinkModsModal />
+    <BlockedModsModal />
 	</div>
 </template>
 

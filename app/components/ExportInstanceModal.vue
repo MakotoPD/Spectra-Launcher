@@ -23,14 +23,14 @@
           </div>
         </div>
 
-        <!-- mrpack metadata -->
-        <template v-if="format === 'mrpack'">
+        <!-- modpack metadata (mrpack / curseforge) -->
+        <template v-if="isModpack">
           <div class="grid grid-cols-2 gap-3">
             <UFormField :label="$t('export.version')">
               <UInput v-model="version" placeholder="1.0.0" class="w-full" />
             </UFormField>
-            <UFormField :label="$t('export.summary')">
-              <UInput v-model="summary" :placeholder="$t('export.summaryPlaceholder')" class="w-full" />
+            <UFormField :label="isCf ? $t('export.author') : $t('export.summary')">
+              <UInput v-model="meta" :placeholder="$t('export.summaryPlaceholder')" class="w-full" />
             </UFormField>
           </div>
           <USwitch v-model="optionalDisabled" :label="$t('export.optionalDisabled')" :description="$t('export.optionalDisabledDesc')" />
@@ -48,7 +48,7 @@
               :toggle="toggle"
             />
           </div>
-          <p v-if="format === 'mrpack'" class="mt-2 text-xs text-muted">{{ $t('export.mrpackHint') }}</p>
+          <p v-if="isModpack" class="mt-2 text-xs text-muted">{{ $t('export.mrpackHint') }}</p>
         </div>
 
         <p v-if="error" class="text-sm text-error">{{ error }}</p>
@@ -74,26 +74,33 @@ import { invoke } from '@tauri-apps/api/core'
 import { save } from '@tauri-apps/plugin-dialog'
 
 const { isOpen, target, close } = useExportModal()
+const curseforge = useCurseforge()
 const activity = useActivityCenter()
 const toast = useToast()
 const { t } = useI18n()
 
-type Format = 'mrpack' | 'backup'
+type Format = 'mrpack' | 'curseforge' | 'backup'
 const format = ref<Format>('mrpack')
 const version = ref('1.0.0')
-const summary = ref('')
+const meta = ref('') // summary (mrpack) or author (curseforge)
 const optionalDisabled = ref(false)
 const excluded = ref<Set<string>>(new Set())
 const exporting = ref(false)
 const error = ref<string | null>(null)
+const cfEnabled = ref(false)
+
+const isCf = computed(() => format.value === 'curseforge')
+const isModpack = computed(() => format.value !== 'backup')
 
 // Personal/heavy folders excluded by default (harmless if they don't exist).
 const DEFAULT_EXCLUDE = ['saves', 'screenshots', 'crash-reports', 'backups']
 
-const formats = computed<{ value: Format, label: string, desc: string, icon: string }[]>(() => [
-  { value: 'mrpack', label: 'Modrinth (.mrpack)', desc: t('export.mrpackDesc'), icon: 'i-lucide-package' },
-  { value: 'backup', label: t('export.backup'), desc: t('export.backupDesc'), icon: 'i-lucide-archive' },
-])
+const formats = computed<{ value: Format, label: string, desc: string, icon: string }[]>(() => {
+  const list = [{ value: 'mrpack' as Format, label: 'Modrinth (.mrpack)', desc: t('export.mrpackDesc'), icon: 'i-lucide-package' }]
+  if (cfEnabled.value) list.push({ value: 'curseforge' as Format, label: 'CurseForge (.zip)', desc: t('export.cfDesc'), icon: 'i-lucide-flame' })
+  list.push({ value: 'backup' as Format, label: t('export.backup'), desc: t('export.backupDesc'), icon: 'i-lucide-archive' })
+  return list
+})
 
 function toggle(path: string, _isDir: boolean) {
   const next = new Set(excluded.value)
@@ -110,10 +117,11 @@ watch(isOpen, (open) => {
   if (open && target.value) {
     format.value = 'mrpack'
     version.value = '1.0.0'
-    summary.value = ''
+    meta.value = ''
     optionalDisabled.value = false
     error.value = null
     excluded.value = new Set(DEFAULT_EXCLUDE)
+    curseforge.enabled().then(v => (cfEnabled.value = v)).catch(() => (cfEnabled.value = false))
   }
 })
 
@@ -122,14 +130,16 @@ async function doExport() {
   if (!tgt) return
   error.value = null
 
-  const isMrpack = format.value === 'mrpack'
-  const ext = isMrpack ? 'mrpack' : 'zip'
+  const ext = format.value === 'mrpack' ? 'mrpack' : 'zip'
+  const filterName = format.value === 'mrpack'
+    ? 'Modrinth modpack'
+    : format.value === 'curseforge' ? 'CurseForge modpack' : 'Mako backup'
   const safe = tgt.name.replace(/[^\w.\- ]+/g, '_').trim() || 'instance'
 
   try {
     const dest = await save({
       defaultPath: `${safe}.${ext}`,
-      filters: [{ name: isMrpack ? 'Modrinth modpack' : 'Mako backup', extensions: [ext] }],
+      filters: [{ name: filterName, extensions: [ext] }],
     })
     if (typeof dest !== 'string') return
 
@@ -137,14 +147,13 @@ async function doExport() {
     const tid = activity.startTask(t('activity.exportingInstance', { name: tgt.name }))
     const exclude = [...excluded.value]
     try {
-      if (isMrpack) {
+      if (format.value === 'mrpack') {
         await invoke('export_mrpack', {
-          id: tgt.id,
-          dest,
-          version: version.value || null,
-          summary: summary.value || null,
-          exclude,
-          optionalDisabled: optionalDisabled.value,
+          id: tgt.id, dest, version: version.value || null, summary: meta.value || null, exclude, optionalDisabled: optionalDisabled.value,
+        })
+      } else if (format.value === 'curseforge') {
+        await invoke('export_curseforge', {
+          id: tgt.id, dest, version: version.value || null, author: meta.value || null, exclude, optionalDisabled: optionalDisabled.value,
         })
       } else {
         await invoke('export_instance', { id: tgt.id, dest, exclude })

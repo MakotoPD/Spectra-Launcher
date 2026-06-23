@@ -276,7 +276,6 @@
 
 <script setup lang="ts">
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { open as openExternal } from '@tauri-apps/plugin-shell'
 import { marked } from 'marked'
 import type { ModrinthHit, ModrinthVersion, ModrinthCategory, ModrinthSortIndex, ModrinthGalleryItem, ModrinthProjectType } from '~/types/modrinth'
 import type { LoaderType } from '~/types/launcher'
@@ -284,6 +283,7 @@ import type { LoaderType } from '~/types/launcher'
 const { isOpen, config, close } = useModrinthBrowser()
 const modrinth = useModrinth()
 const curseforge = useCurseforge()
+const blockedModal = useBlockedModsModal()
 const meta = useMinecraftMeta()
 
 // --- provider (Modrinth / CurseForge) ---
@@ -524,6 +524,11 @@ async function doInstall(version: ModrinthVersion) {
       toast.add({ title: t('modrinth.installed', { name: instance.name }), color: 'success' })
       cfg.onInstalled?.(instance)
       close()
+      // CurseForge packs may contain mods the author blocked from auto-download.
+      if (isCf.value) {
+        const blocked = await curseforge.getBlocked(instance.id)
+        if (blocked.length) blockedModal.open(instance.id)
+      }
     } else if (cfg.instanceId) {
       if (isCf.value) {
         const res = await curseforge.installWithDeps(
@@ -534,22 +539,13 @@ async function doInstall(version: ModrinthVersion) {
           loaderValue.value,
         )
         installedIds.value = new Set([...installedIds.value, ...res.added.map(i => i.project_id)])
-        if (res.blocked.length) {
-          // Authors blocked third-party download — point the user to the pages.
-          for (const b of res.blocked) {
-            toast.add({
-              title: t('modrinth.blocked', { name: b.name }),
-              color: 'warning',
-              actions: [{ label: t('logs.openLink'), onClick: () => openExternal(b.url) }],
-            })
-          }
-        } else {
-          const deps = res.added.filter(i => i.dependency).length
-          toast.add({
-            title: deps > 0 ? t('modrinth.installedWithDeps', { name, n: deps }) : t('modrinth.installed', { name }),
-            color: 'success',
-          })
-        }
+        const deps = res.added.filter(i => i.dependency).length
+        toast.add({
+          title: deps > 0 ? t('modrinth.installedWithDeps', { name, n: deps }) : t('modrinth.installed', { name }),
+          color: 'success',
+        })
+        // Authors blocked third-party download → open the manual-download resolver.
+        if (res.blocked.length) blockedModal.open(cfg.instanceId)
       } else {
         const added = await modrinth.installWithDeps(
           cfg.instanceId,

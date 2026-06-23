@@ -110,6 +110,7 @@ export interface LauncherPaths {
 export interface MultiProgress { instance_id: string; current: number; total: number }
 export interface FileProgress { instance_id: string; path: string; current: number; total: number }
 export interface ConsoleLine { instance_id: string; line: string }
+export interface ModpackProgress { instance_id: string; name: string; current: number; total: number }
 export interface ExitInfo { instance_id: string; code: number | null }
 export interface CrashInfo {
   instance_id: string
@@ -170,6 +171,16 @@ export interface ExternalInstance {
   mc_version: string | null
   loader: string | null
   loader_version: string | null
+}
+
+// A CurseForge mod blocked from third-party download (mirrors BlockedMod in curseforge.rs).
+export interface BlockedMod {
+  name: string
+  filename: string
+  project_id: string
+  file_id: string
+  url: string
+  fingerprint: number
 }
 
 export interface LogFile {

@@ -658,6 +658,7 @@ struct MrEnv {
 
 #[derive(Clone, Serialize)]
 struct ModpackProgress {
+    instance_id: String,
     current: u64,
     total: u64,
     name: String,
@@ -1013,19 +1014,43 @@ async fn apply_mrpack_files(
         .collect();
     let total = downloadable.len() as u64;
 
-    for (i, file) in downloadable.iter().enumerate() {
-        let Some(src) = file.downloads.first() else { continue };
+    // Download files concurrently (bounded) — sequential was the slow part.
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(10));
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut set = tokio::task::JoinSet::new();
+    for file in &downloadable {
+        let Some(src) = file.downloads.first().cloned() else { continue };
         let dest = join_safe(&game_dir, &file.path)?;
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        let path_label = file.path.clone();
+        let http = http.clone();
+        let sem = sem.clone();
+        let done = done.clone();
+        let app = app.clone();
+        let id = instance_id.to_string();
+        let name = name.to_string();
+        set.spawn(async move {
+            let _permit = sem.acquire_owned().await.map_err(|e| e.to_string())?;
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            match download_direct(&http, &src).await {
+                Ok(bytes) => {
+                    std::fs::write(&dest, &bytes).map_err(|e| format!("write {path_label}: {e}"))?;
+                }
+                Err(e) => log::warn!("modpack file failed ({path_label}): {e}"),
+            }
+            let current = done.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            let _ = app.emit(
+                "modrinth://modpack-progress",
+                ModpackProgress { instance_id: id, current, total, name },
+            );
+            Ok::<(), String>(())
+        });
+    }
+    while let Some(res) = set.join_next().await {
+        if let Ok(Err(e)) = res {
+            return Err(e);
         }
-        let bytes = download(http, src).await?;
-        std::fs::write(&dest, &bytes).map_err(|e| format!("write {}: {e}", file.path))?;
-
-        let _ = app.emit(
-            "modrinth://modpack-progress",
-            ModpackProgress { current: i as u64 + 1, total, name: name.to_string() },
-        );
     }
 
     let mut archive =
@@ -1361,6 +1386,16 @@ fn extract_overrides(
 
 async fn download(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
     let resp = send(client.get(url)).await?;
+    if !resp.status().is_success() {
+        return Err(format!("download failed ({}): {url}", resp.status()));
+    }
+    Ok(resp.bytes().await.map_err(|e| e.to_string())?.to_vec())
+}
+
+/// Like [`download`] but bypasses the API rate-gate — for CDN file downloads
+/// (modpack contents) we want high parallelism, not the 300/min API budget.
+async fn download_direct(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
+    let resp = client.get(url).send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
         return Err(format!("download failed ({}): {url}", resp.status()));
     }
