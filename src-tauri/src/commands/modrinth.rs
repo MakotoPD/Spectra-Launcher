@@ -415,6 +415,74 @@ pub fn get_installed_content(instance_id: String) -> Result<Vec<InstalledItem>, 
     Ok(read_content_index(&instance_id).items)
 }
 
+/// A potential problem with an installed mod (e.g. wrong loader).
+#[derive(Serialize)]
+pub struct Conflict {
+    filename: String,
+    name: String,
+    /// "loader" | "duplicate"
+    kind: String,
+    detail: String,
+}
+
+/// Loaders a given instance loader can actually run.
+fn accepted_loaders(loader: &Loader) -> Vec<&'static str> {
+    match loader {
+        Loader::Fabric(_) => vec!["fabric"],
+        Loader::Quilt(_) => vec!["quilt", "fabric"], // Quilt runs Fabric mods
+        Loader::Forge(_) => vec!["forge"],
+        Loader::NeoForge(_) => vec!["neoforge"],
+        Loader::Vanilla => vec![],
+    }
+}
+
+/// Scans an instance's recorded mods for likely problems: mods built for a
+/// different loader, or mods on a vanilla (loader-less) instance.
+#[tauri::command]
+pub fn check_conflicts(instance_id: String) -> Result<Vec<Conflict>, String> {
+    let instance: Instance =
+        store::read_json(&paths::instance_config_file(&instance_id))?.ok_or("instance not found")?;
+    let accepted = accepted_loaders(&instance.loader);
+    let loader_label = match &instance.loader {
+        Loader::Vanilla => "Vanilla",
+        Loader::Fabric(_) => "Fabric",
+        Loader::Quilt(_) => "Quilt",
+        Loader::Forge(_) => "Forge",
+        Loader::NeoForge(_) => "NeoForge",
+    };
+    let index = read_content_index(&instance_id);
+    let mut out = Vec::new();
+
+    // Duplicate project ids (the same mod recorded twice).
+    let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for item in &index.items {
+        *seen.entry(item.project_id.as_str()).or_insert(0) += 1;
+    }
+
+    for item in index.items.iter().filter(|i| i.kind == "mod") {
+        let loaders: Vec<String> = item.loaders.iter().map(|l| l.to_lowercase()).collect();
+        // loader-agnostic content carries these instead of a real loader
+        let agnostic = loaders.iter().any(|l| l == "minecraft" || l == "datapack");
+        if !loaders.is_empty() && !agnostic && !loaders.iter().any(|l| accepted.contains(&l.as_str())) {
+            out.push(Conflict {
+                filename: item.filename.clone(),
+                name: item.name.clone(),
+                kind: "loader".into(),
+                detail: format!("{} ≠ {loader_label}", item.loaders.join("/")),
+            });
+        }
+        if seen.get(item.project_id.as_str()).copied().unwrap_or(0) > 1 {
+            out.push(Conflict {
+                filename: item.filename.clone(),
+                name: item.name.clone(),
+                kind: "duplicate".into(),
+                detail: String::new(),
+            });
+        }
+    }
+    Ok(out)
+}
+
 /// Plain accessor for other command modules (e.g. mod management).
 pub fn installed_items(instance_id: &str) -> Vec<InstalledItem> {
     read_content_index(instance_id).items

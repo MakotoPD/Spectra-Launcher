@@ -120,6 +120,7 @@ pub fn run() {
             commands::modrinth::modrinth_categories,
             commands::modrinth::modrinth_install_with_deps,
             commands::modrinth::get_installed_content,
+            commands::modrinth::check_conflicts,
             commands::modrinth::modrinth_install_modpack,
             commands::modrinth::import_file,
             commands::modrinth::export_mrpack,
@@ -145,6 +146,7 @@ pub fn run() {
             commands::import::import_external_instance,
             commands::import::list_dir,
             commands::import::export_instance,
+            commands::import::import_dropped,
             commands::import::write_text_file,
             // Mod management
             commands::mods::list_mods,
@@ -161,6 +163,8 @@ pub fn run() {
             commands::skins::get_player_skin,
             commands::skins::import_player_skin,
             commands::skins::apply_skin,
+            commands::skins::get_player_capes,
+            commands::skins::set_active_cape,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

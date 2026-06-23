@@ -279,10 +279,6 @@ async function copyPath(item: Instance) {
   }
 }
 
-function addContent() {
-  toast.add({ title: t('library.comingSoon'), color: 'neutral' })
-}
-
 // --- context menu (dynamic: instance vs empty space) ---
 const contextTarget = ref<Instance | null>(null)
 
@@ -301,7 +297,6 @@ function instanceMenu(item: Instance) {
   return [
     [
       { label: t('ctx.play'), icon: 'i-lucide-play', onSelect: () => play(item) },
-      { label: t('ctx.addContent'), icon: 'i-lucide-package-plus', onSelect: () => addContent() },
       { label: t('ctx.view'), icon: 'i-lucide-eye', onSelect: () => enter(item.id) },
       { label: t('ctx.duplicate'), icon: 'i-lucide-copy', onSelect: () => duplicate(item) },
     ],

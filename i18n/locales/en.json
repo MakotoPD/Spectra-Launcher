@@ -207,6 +207,45 @@
     "save": "Save",
     "saved": "Mod list saved"
   },
+  "onboarding": {
+    "welcomeTitle": "Welcome to Mako Launcher",
+    "welcomeText": "A fast, modern Minecraft launcher. Let's set things up in a few steps.",
+    "accountTitle": "Sign in",
+    "accountText": "Sign in with Microsoft to play online, or add an offline account.",
+    "signedInAs": "Signed in as {name}",
+    "themeTitle": "Make it yours",
+    "themeText": "Pick a theme and an accent color.",
+    "javaTitle": "Java & memory",
+    "javaText": "Mako manages Java automatically. Set how much RAM instances get by default.",
+    "javaFound": "{n} Java installation(s) found",
+    "ram": "Default memory",
+    "doneTitle": "You're all set!",
+    "doneText": "Create or import an instance and start playing.",
+    "skip": "Skip",
+    "next": "Next",
+    "start": "Start"
+  },
+  "conflicts": {
+    "title": "{n} potential conflict(s)",
+    "loader": "wrong loader ({detail})",
+    "duplicate": "installed more than once"
+  },
+  "prelaunch": {
+    "noAccount": "Sign in to an account before playing.",
+    "title": "Before launching",
+    "ramHigh": "Allocated RAM ({mb} MB) is close to or above your system memory.",
+    "conflict": "{name}: wrong loader ({detail})",
+    "duplicate": "{name}: installed more than once",
+    "launchAnyway": "Launch anyway"
+  },
+  "drop": {
+    "title": "Drop to import",
+    "onInstance": "Modpacks become new instances · mods/resource packs are added here",
+    "onHome": "Drop a .mrpack or CurseForge .zip to create an instance",
+    "imported": "Imported {n} instance(s)",
+    "added": "Added {n} file(s)",
+    "nothing": "Nothing importable was dropped"
+  },
   "blocked": {
     "title": "Mods to download manually",
     "desc": "These mods' authors don't allow third-party downloads. Download each one, then drop it in your downloads folder — it will be added automatically.",
@@ -431,7 +470,10 @@
     "inUse": "In use",
     "model": "Arm model",
     "classic": "Classic",
-    "slim": "Slim"
+    "slim": "Slim",
+    "capes": "Capes",
+    "noCape": "No cape",
+    "capeSet": "Cape updated"
   },
   "instSettings": {
     "tabs": {

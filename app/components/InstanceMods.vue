@@ -63,6 +63,19 @@
 
     <p v-if="error" class="text-sm text-error">{{ error }}</p>
 
+    <!-- conflicts -->
+    <div v-if="conflicts.length" class="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
+      <div class="flex items-center gap-1.5 text-sm font-medium text-amber-300">
+        <UIcon name="i-lucide-triangle-alert" class="size-4" />
+        {{ $t('conflicts.title', { n: conflicts.length }) }}
+      </div>
+      <ul class="mt-1 space-y-0.5 text-xs text-amber-200/80">
+        <li v-for="c in conflicts" :key="c.filename + c.kind">
+          {{ c.name }} — {{ c.kind === 'loader' ? $t('conflicts.loader', { detail: c.detail }) : $t('conflicts.duplicate') }}
+        </li>
+      </ul>
+    </div>
+
     <!-- empty: no mods at all -->
     <div v-else-if="!loading && !mods.length" class="flex flex-col items-center justify-center gap-3 py-16 text-center">
       <UIcon name="i-lucide-blocks" class="size-10 text-neutral-600" />
@@ -474,11 +487,19 @@ async function load() {
   }
   void linkAndCheck()
   void loadBlocked()
+  void loadConflicts()
 }
 
 // Whether a CurseForge API key is configured (enables CF linking).
 const cfEnabled = ref(false)
 curseforge.enabled().then(v => (cfEnabled.value = v)).catch(() => {})
+
+// Likely mod conflicts (wrong loader, duplicates).
+const conflicts = ref<{ filename: string, name: string, kind: string, detail: string }[]>([])
+async function loadConflicts() {
+  try { conflicts.value = await invoke('check_conflicts', { instanceId: props.instanceId }) }
+  catch { conflicts.value = [] }
+}
 
 // CurseForge mods blocked from auto-download, awaiting manual fetch.
 const blockedCount = ref(0)

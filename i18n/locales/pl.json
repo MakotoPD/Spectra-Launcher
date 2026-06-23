@@ -208,6 +208,45 @@
     "save": "Zapisz",
     "saved": "Lista modów zapisana"
   },
+  "onboarding": {
+    "welcomeTitle": "Witaj w Mako Launcher",
+    "welcomeText": "Szybki, nowoczesny launcher Minecrafta. Skonfigurujmy go w kilku krokach.",
+    "accountTitle": "Zaloguj się",
+    "accountText": "Zaloguj się przez Microsoft, aby grać online, albo dodaj konto offline.",
+    "signedInAs": "Zalogowano jako {name}",
+    "themeTitle": "Dostosuj wygląd",
+    "themeText": "Wybierz motyw i kolor akcentu.",
+    "javaTitle": "Java i pamięć",
+    "javaText": "Mako zarządza Javą automatycznie. Ustaw domyślną ilość RAM dla instancji.",
+    "javaFound": "Znaleziono {n} instalacji Javy",
+    "ram": "Domyślna pamięć",
+    "doneTitle": "Wszystko gotowe!",
+    "doneText": "Utwórz lub zaimportuj instancję i zacznij grać.",
+    "skip": "Pomiń",
+    "next": "Dalej",
+    "start": "Zaczynamy"
+  },
+  "conflicts": {
+    "title": "{n} potencjalnych konfliktów",
+    "loader": "zły loader ({detail})",
+    "duplicate": "zainstalowany więcej niż raz"
+  },
+  "prelaunch": {
+    "noAccount": "Zaloguj się na konto przed graniem.",
+    "title": "Przed uruchomieniem",
+    "ramHigh": "Przydzielony RAM ({mb} MB) jest bliski lub przekracza pamięć systemu.",
+    "conflict": "{name}: zły loader ({detail})",
+    "duplicate": "{name}: zainstalowany więcej niż raz",
+    "launchAnyway": "Uruchom mimo to"
+  },
+  "drop": {
+    "title": "Upuść, aby zaimportować",
+    "onInstance": "Modpacki tworzą nowe instancje · mody/resourcepacki trafią tutaj",
+    "onHome": "Upuść .mrpack lub .zip z CurseForge, aby utworzyć instancję",
+    "imported": "Zaimportowano {n} instancji",
+    "added": "Dodano {n} plik(ów)",
+    "nothing": "Nie upuszczono niczego do zaimportowania"
+  },
   "blocked": {
     "title": "Mody do pobrania ręcznie",
     "desc": "Autorzy tych modów nie zezwalają na pobieranie w aplikacjach trzecich. Pobierz każdy, a po zapisaniu w folderze pobierania zostanie dodany automatycznie.",
@@ -432,7 +471,10 @@
     "inUse": "W użyciu",
     "model": "Model ramion",
     "classic": "Klasyczny",
-    "slim": "Slim"
+    "slim": "Slim",
+    "capes": "Peleryny",
+    "noCape": "Bez peleryny",
+    "capeSet": "Peleryna zmieniona"
   },
   "instSettings": {
     "tabs": {

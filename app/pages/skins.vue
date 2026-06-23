@@ -105,6 +105,35 @@
           </div>
         </section>
       </div>
+
+      <!-- capes (Microsoft accounts) -->
+      <section v-if="isMicrosoft && capes.length">
+        <h2 class="mb-3 text-sm font-semibold text-neutral-300">{{ $t('skins.capes') }}</h2>
+        <div class="flex flex-wrap gap-3">
+          <button
+            type="button"
+            class="flex w-24 flex-col items-center gap-2 rounded-xl border p-2 transition"
+            :class="!activeCapeId ? 'border-primary-500 bg-primary-500/10' : 'border-default bg-white/3 hover:border-primary-500/40'"
+            @click="chooseCape(null)"
+          >
+            <div class="flex h-16 w-10 items-center justify-center rounded bg-white/5 text-neutral-500">
+              <UIcon name="i-lucide-ban" class="size-5" />
+            </div>
+            <span class="text-[11px]">{{ $t('skins.noCape') }}</span>
+          </button>
+          <button
+            v-for="c in capes"
+            :key="c.id"
+            type="button"
+            class="flex w-24 flex-col items-center gap-2 rounded-xl border p-2 transition"
+            :class="c.active ? 'border-primary-500 bg-primary-500/10' : 'border-default bg-white/3 hover:border-primary-500/40'"
+            @click="chooseCape(c)"
+          >
+            <div class="h-16 w-10 rounded" :style="capeStyle(c.url)" />
+            <span class="truncate text-[11px]" :title="c.alias">{{ c.alias || 'Cape' }}</span>
+          </button>
+        </div>
+      </section>
     </div>
   </div>
 </template>
@@ -122,6 +151,37 @@ const { t } = useI18n()
 
 const isMicrosoft = computed(() => account.activeAccount?.kind === 'microsoft')
 const nickname = computed(() => account.activeAccount?.username ?? '—')
+
+// --- capes (Microsoft accounts) ---
+interface Cape { id: string; url: string; alias: string; active: boolean }
+const capes = ref<Cape[]>([])
+const activeCapeId = computed(() => capes.value.find(c => c.active)?.id ?? null)
+
+async function loadCapes() {
+  if (!isMicrosoft.value) { capes.value = []; return }
+  try { capes.value = await invoke<Cape[]>('get_player_capes') }
+  catch { capes.value = [] }
+}
+async function chooseCape(c: Cape | null) {
+  try {
+    await invoke('set_active_cape', { capeId: c?.id ?? null })
+    capes.value = capes.value.map(x => ({ ...x, active: x.id === c?.id }))
+    toast.add({ title: t('skins.capeSet'), color: 'success' })
+  } catch (e) {
+    toast.add({ title: String(e), color: 'error' })
+  }
+}
+// Show the cape's front face cropped from its texture (2:1 layout).
+function capeStyle(url: string) {
+  return {
+    backgroundImage: `url(${url})`,
+    backgroundSize: '640% 200%',
+    backgroundPosition: '1.85% 6.25%',
+    backgroundRepeat: 'no-repeat',
+    imageRendering: 'pixelated' as const,
+  }
+}
+watch(isMicrosoft, loadCapes)
 
 interface DefaultSkin { name: string; model: 'classic' | 'slim'; url: string }
 const defaults: DefaultSkin[] = [
@@ -314,6 +374,7 @@ onMounted(async () => {
 
   await loadSaved()
   await initPlayerSkin()
+  await loadCapes()
 
   // Native file drag & drop onto the page adds skins.
   unlistenDrop = await getCurrentWebview().onDragDropEvent((event) => {

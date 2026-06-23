@@ -160,6 +160,24 @@
   <div v-else class="flex h-full items-center justify-center text-muted">
     {{ $t('instance.notFound') }}
   </div>
+
+  <!-- pre-launch warnings -->
+  <UModal v-model:open="prelaunchOpen" :title="$t('prelaunch.title')" :ui="{ content: 'max-w-md' }">
+    <template #body>
+      <ul class="space-y-1.5 text-sm">
+        <li v-for="(w, i) in prelaunchWarnings" :key="i" class="flex items-start gap-2 text-amber-200/90">
+          <UIcon name="i-lucide-triangle-alert" class="mt-0.5 size-4 shrink-0 text-amber-400" />
+          <span>{{ w }}</span>
+        </li>
+      </ul>
+    </template>
+    <template #footer>
+      <div class="flex w-full justify-end gap-2">
+        <UButton variant="ghost" color="neutral" :label="$t('common.cancel')" @click="prelaunchOpen = false" />
+        <UButton color="warning" :label="$t('prelaunch.launchAnyway')" @click="confirmLaunch" />
+      </div>
+    </template>
+  </UModal>
 </template>
 
 <script setup lang="ts">
@@ -170,6 +188,8 @@ import type { QuickPlay } from '~/types/launcher'
 const route = useRoute()
 const router = useRouter()
 const instances = useInstancesStore()
+const accounts = useAccountStore()
+const sysMem = useSystemMemory()
 const toast = useToast()
 const { t } = useI18n()
 const exportModal = useExportModal()
@@ -341,19 +361,59 @@ const menuItems = computed(() => [[
   },
 ]])
 
-const play = async () => {
-  if (!instance.value) return
+// --- pre-launch validation ---
+const prelaunchOpen = ref(false)
+const prelaunchWarnings = ref<string[]>([])
+let pendingQuickPlay: QuickPlay | undefined
+
+async function collectWarnings(): Promise<string[]> {
+  const out: string[] = []
+  const inst = instance.value
+  if (!inst) return out
+  // RAM (only when the instance overrides with its own value).
+  await sysMem.ensure()
+  if (inst.override_memory && inst.memory_mb && sysMem.totalMb.value && inst.memory_mb > sysMem.totalMb.value * 0.9) {
+    out.push(t('prelaunch.ramHigh', { mb: inst.memory_mb }))
+  }
+  // Mod conflicts (wrong loader / duplicates).
   try {
-    await mc.launch(instance.value.id)
-  } catch { /* surfaced via mc.error */ }
+    const conflicts = await invoke<{ name: string, kind: string, detail: string }[]>('check_conflicts', { instanceId: id.value })
+    for (const c of conflicts) {
+      out.push(c.kind === 'loader' ? t('prelaunch.conflict', { name: c.name, detail: c.detail }) : t('prelaunch.duplicate', { name: c.name }))
+    }
+  } catch { /* ignore */ }
+  return out
 }
 
-const handleQuickPlay = async (qp: QuickPlay) => {
+async function launchWith(qp?: QuickPlay) {
   if (!instance.value) return
-  try {
-    await mc.launch(instance.value.id, qp)
-  } catch { /* surfaced via mc.error */ }
+  if (!accounts.activeAccount) {
+    toast.add({ title: t('prelaunch.noAccount'), color: 'error' })
+    return
+  }
+  const warnings = await collectWarnings()
+  if (warnings.length) {
+    prelaunchWarnings.value = warnings
+    pendingQuickPlay = qp
+    prelaunchOpen.value = true
+    return
+  }
+  doLaunch(qp)
 }
+
+function doLaunch(qp?: QuickPlay) {
+  if (!instance.value) return
+  mc.launch(instance.value.id, qp).catch(() => { /* surfaced via mc.error */ })
+}
+
+function confirmLaunch() {
+  prelaunchOpen.value = false
+  doLaunch(pendingQuickPlay)
+  pendingQuickPlay = undefined
+}
+
+const play = () => launchWith()
+const handleQuickPlay = (qp: QuickPlay) => launchWith(qp)
 
 async function openGameFolder() {
   try {

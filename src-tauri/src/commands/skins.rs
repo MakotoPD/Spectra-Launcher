@@ -218,6 +218,76 @@ pub async fn import_player_skin(uuid: String, name: String) -> Result<SavedSkin,
     Ok(skin)
 }
 
+/// A cape owned by the logged-in player.
+#[derive(Serialize)]
+pub struct Cape {
+    pub id: String,
+    pub url: String,
+    pub alias: String,
+    pub active: bool,
+}
+
+#[derive(Deserialize)]
+struct ProfileCape {
+    id: String,
+    #[serde(default)]
+    state: String,
+    url: String,
+    #[serde(default)]
+    alias: String,
+}
+
+#[derive(Deserialize)]
+struct ProfileCapesResponse {
+    #[serde(default)]
+    capes: Vec<ProfileCape>,
+}
+
+/// Capes the active Microsoft account owns (empty for offline accounts).
+#[tauri::command]
+pub async fn get_player_capes() -> Result<Vec<Cape>, String> {
+    let account = refresh_active_account().await?;
+    if account.kind != AccountKind::Microsoft {
+        return Ok(vec![]);
+    }
+    let resp = http()?
+        .get("https://api.minecraftservices.com/minecraft/profile")
+        .bearer_auth(&account.access_token)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("profile failed: {}", resp.status()));
+    }
+    let p: ProfileCapesResponse = resp.json().await.map_err(|e| e.to_string())?;
+    Ok(p.capes
+        .into_iter()
+        .map(|c| Cape { id: c.id, url: c.url, alias: c.alias, active: c.state.eq_ignore_ascii_case("ACTIVE") })
+        .collect())
+}
+
+/// Sets the active cape (`Some(id)`) or hides any cape (`None`).
+#[tauri::command]
+pub async fn set_active_cape(cape_id: Option<String>) -> Result<(), String> {
+    let account = refresh_active_account().await?;
+    if account.kind != AccountKind::Microsoft {
+        return Err("only Microsoft accounts can change capes".into());
+    }
+    let client = http()?;
+    let url = "https://api.minecraftservices.com/minecraft/profile/capes/active";
+    let resp = match cape_id {
+        Some(id) => {
+            client.put(url).bearer_auth(&account.access_token).json(&serde_json::json!({ "capeId": id })).send().await
+        }
+        None => client.delete(url).bearer_auth(&account.access_token).send().await,
+    }
+    .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("set cape failed: {}", resp.status()));
+    }
+    Ok(())
+}
+
 /// Uploads a saved skin to the active Microsoft account so it shows in-game.
 #[tauri::command]
 pub async fn apply_skin(id: String) -> Result<(), String> {

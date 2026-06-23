@@ -11,6 +11,7 @@ use std::io::{Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use tauri::AppHandle;
 
 use crate::commands::instances;
 use crate::models::{Instance, Loader};
@@ -118,6 +119,104 @@ pub fn list_dir(id: String, rel: String) -> Result<Vec<DirChild>, String> {
     }
     out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())));
     Ok(out)
+}
+
+// ===== drag & drop =====
+
+/// Outcome of handling dropped files.
+#[derive(Serialize, Default)]
+pub struct DropResult {
+    /// New instances created from dropped modpack/backup archives.
+    instances: Vec<Instance>,
+    /// Content files (mods/resource packs/…) copied into the target instance.
+    added: usize,
+    /// Files that couldn't be handled (e.g. a jar dropped outside an instance).
+    skipped: usize,
+}
+
+/// Handles files dropped onto the window. Modpack/backup archives become new
+/// instances; mods/resource packs/shaders are copied into `instance_id` (the
+/// instance the user is currently viewing), if any.
+#[tauri::command]
+pub async fn import_dropped(
+    app: AppHandle,
+    instance_id: Option<String>,
+    paths: Vec<String>,
+) -> Result<DropResult, String> {
+    let mut result = DropResult::default();
+    for p in paths {
+        let path = PathBuf::from(&p);
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+
+        // Modpack / backup archive → new instance.
+        if ext == "mrpack" || (ext == "zip" && is_instance_archive(&path)) {
+            match crate::commands::modrinth::import_file(app.clone(), p.clone(), None).await {
+                Ok(inst) => result.instances.push(inst),
+                Err(_) => result.skipped += 1,
+            }
+            continue;
+        }
+
+        // Content file → copy into the open instance.
+        if (ext == "jar" || ext == "zip") && instance_id.is_some() {
+            let id = instance_id.as_deref().unwrap();
+            if copy_dropped_content(id, &path).is_ok() {
+                result.added += 1;
+            } else {
+                result.skipped += 1;
+            }
+            continue;
+        }
+        result.skipped += 1;
+    }
+    Ok(result)
+}
+
+/// True if a zip looks like a modpack (Modrinth/CurseForge) or a Mako backup.
+fn is_instance_archive(path: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(path) else { return false };
+    let Ok(mut z) = zip::ZipArchive::new(Cursor::new(bytes)) else { return false };
+    z.by_name("modrinth.index.json").is_ok()
+        || z.by_name("manifest.json").is_ok()
+        || z.by_name(BACKUP_MANIFEST).is_ok()
+}
+
+/// Copies a dropped content file into the right game-dir folder (sniffing zips).
+fn copy_dropped_content(instance_id: &str, path: &Path) -> Result<(), String> {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).ok_or("bad filename")?;
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let folder = if ext == "jar" { "mods" } else { sniff_zip_folder(path) };
+    let dir = paths::instance_game_dir(instance_id).join(folder);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::copy(path, dir.join(&name)).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Guesses where a dropped `.zip` belongs from its contents.
+fn sniff_zip_folder(path: &Path) -> &'static str {
+    let Ok(bytes) = std::fs::read(path) else { return "resourcepacks" };
+    let Ok(mut z) = zip::ZipArchive::new(Cursor::new(bytes)) else { return "resourcepacks" };
+    let mut has_data = false;
+    let mut has_assets = false;
+    for i in 0..z.len() {
+        if let Ok(f) = z.by_index(i) {
+            let n = f.name();
+            if n.starts_with("shaders/") {
+                return "shaderpacks";
+            }
+            if n.starts_with("data/") {
+                has_data = true;
+            }
+            if n.starts_with("assets/") {
+                has_assets = true;
+            }
+        }
+    }
+    if has_data && !has_assets {
+        "datapacks"
+    } else {
+        "resourcepacks"
+    }
 }
 
 /// True if `name` is a regenerable top-level folder never offered for export.
