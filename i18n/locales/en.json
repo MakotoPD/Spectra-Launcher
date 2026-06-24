@@ -453,7 +453,8 @@
       "name": "Name",
       "version": "Version",
       "updated": "Last modified",
-      "enabled": "State"
+      "enabled": "State",
+      "update": "Sort by available update"
     },
     "changeVersion": "Change version",
     "update": "Update",

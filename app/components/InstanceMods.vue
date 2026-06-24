@@ -110,7 +110,10 @@
             {{ $t('mods.col.updated') }}
             <UIcon :name="sortIcon('updated')" class="size-3" :class="{ 'opacity-30': sortCol !== 'updated' }" />
           </button>
-          <span />
+          <button type="button" class="flex items-center justify-center gap-1 transition hover:text-neutral-200" :class="{ 'text-primary-400': sortCol === 'update' }" :title="$t('mods.col.update')" @click="toggleSort('update')">
+            <UIcon name="i-lucide-circle-arrow-up" class="size-3.5" />
+            <UIcon :name="sortIcon('update')" class="size-3" :class="{ 'opacity-30': sortCol !== 'update' }" />
+          </button>
           <span />
         </div>
 
@@ -406,14 +409,18 @@ function openModPage(mod: ModEntry) {
 }
 
 // --- controls ---
-type SortCol = 'name' | 'version' | 'updated' | 'state'
+type SortCol = 'name' | 'version' | 'updated' | 'state' | 'update'
 const search = ref('')
 const perPage = ref(25)
 const page = ref(1)
 
-// Column-header sorting: click cycles asc → desc → off.
-const sortCol = ref<SortCol | null>(null)
+// Column-header sorting: click cycles asc → desc → off. Defaults to floating
+// mods with an available update to the top.
+const sortCol = ref<SortCol | null>('update')
 const sortDir = ref<'asc' | 'desc'>('asc')
+
+/** Whether a mod has an available update. */
+const hasUpdate = (m: ModEntry) => !!(m.project_id && updates.value[m.project_id])
 
 function toggleSort(col: SortCol) {
   if (sortCol.value !== col) {
@@ -446,6 +453,7 @@ function compare(a: ModEntry, b: ModEntry, col: SortCol): number {
     case 'version': return (a.version ?? '').localeCompare(b.version ?? '', undefined, { numeric: true })
     case 'updated': return a.modified - b.modified
     case 'state': return Number(b.enabled) - Number(a.enabled) // enabled first
+    case 'update': return Number(hasUpdate(b)) - Number(hasUpdate(a)) // updatable first
   }
 }
 

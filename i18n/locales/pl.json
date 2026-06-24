@@ -454,7 +454,8 @@
       "name": "Nazwa",
       "version": "Wersja",
       "updated": "Data modyfikacji",
-      "enabled": "Stan"
+      "enabled": "Stan",
+      "update": "Sortuj wg dostępnej aktualizacji"
     },
     "changeVersion": "Zmień wersję",
     "update": "Aktualizuj",
