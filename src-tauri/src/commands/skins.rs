@@ -13,7 +13,7 @@ use crate::commands::auth::refresh_active_account;
 use crate::models::{AccountKind, SavedSkin};
 use crate::{paths, store};
 
-const USER_AGENT: &str = "Spectra-Launcher/0.1.0";
+const USER_AGENT: &str = "Spectra-Launcher/0.1.1";
 
 fn http() -> Result<reqwest::Client, String> {
     reqwest::Client::builder().user_agent(USER_AGENT).build().map_err(|e| e.to_string())

@@ -20,7 +20,7 @@ use crate::models::{Instance, Loader};
 use crate::{paths, store};
 
 const API: &str = "https://api.modrinth.com/v2";
-const USER_AGENT: &str = "MakotoPD/Spectra-Launcher/0.1.0 (spectra launcher)";
+const USER_AGENT: &str = "MakotoPD/Spectra-Launcher/0.1.1 (spectra launcher)";
 
 /// One shared client reused for every request, so connections are pooled instead
 /// of opening a fresh client (and TLS handshake) per call. Cloning is cheap — a
