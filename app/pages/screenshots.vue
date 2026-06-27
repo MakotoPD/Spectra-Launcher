@@ -88,6 +88,7 @@
             <div class="flex items-center gap-1.5">
               <UButton icon="i-lucide-download" size="xs" color="neutral" variant="soft" :label="$t('content.download')" @click="downloadShot(lightbox.shot)" />
               <UButton icon="i-lucide-folder-open" size="xs" color="neutral" variant="soft" :label="$t('content.openLocation')" @click="revealShot(lightbox.shot)" />
+              <UButton icon="i-lucide-trash-2" size="xs" color="error" variant="soft" :label="$t('common.remove')" @click="deleteShot(lightbox.instance.id, lightbox.shot)" />
               <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" square @click="lightboxIndex = null" />
             </div>
           </div>
@@ -117,7 +118,7 @@
 
 <script setup lang="ts">
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
-import { save } from '@tauri-apps/plugin-dialog'
+import { save, confirm } from '@tauri-apps/plugin-dialog'
 import type { Instance, ScreenshotInfo } from '~/types/launcher'
 
 const instances = useInstancesStore()
@@ -151,7 +152,7 @@ async function load() {
         }
       }),
     )
-    groups.value = settled.filter(g => g.shots.length > 0)
+    groups.value = settled.filter((g: ShotGroup) => g.shots.length > 0)
   } finally {
     loading.value = false
   }
@@ -195,6 +196,18 @@ async function downloadShot(s: ScreenshotInfo) {
 async function revealShot(s: ScreenshotInfo) {
   try {
     await invoke('reveal_in_explorer', { path: s.path })
+  } catch (e) {
+    toast.add({ title: String(e), color: 'error' })
+  }
+}
+
+async function deleteShot(instanceId: string, s: ScreenshotInfo) {
+  const ok = await confirm(t('content.deleteScreenshotConfirm'), { title: t('content.deleteScreenshotTitle'), kind: 'warning' })
+  if (!ok) return
+  try {
+    await invoke('delete_screenshot', { id: instanceId, name: s.name })
+    lightboxIndex.value = null
+    await load()
   } catch (e) {
     toast.add({ title: String(e), color: 'error' })
   }

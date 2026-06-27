@@ -1,0 +1,107 @@
+import { invoke } from '@tauri-apps/api/core'
+import { getVersion } from '@tauri-apps/api/app'
+import { platform, arch } from '@tauri-apps/plugin-os'
+import type { Settings } from '~/types/launcher'
+
+// Anonymous, opt-in usage stats. Nothing is sent unless the user enabled
+// `anonymous_stats` in Settings → Privacy. No PII: just a random per-install
+// UUID, coarse environment info and event counts. Server: Spectra-Web
+// (server/api/telemetry.post.ts) → SQLite → /admin dashboard.
+
+// TODO: point this at your deployed Spectra-Web domain.
+const TELEMETRY_ENDPOINT = 'https://spectra.makoto.com.pl/api/telemetry'
+// Optional soft key — must match SPECTRA_INGEST_KEY on the server (or leave both empty).
+const INGEST_KEY = 'uaH8U5Gh1ecZdQQCRsvkGo2ARFByk641CYYy7YAYw'
+
+interface QueuedEvent {
+  event: 'app_start' | 'launch' | 'feature' | 'update' | 'crash'
+  props?: Record<string, unknown>
+}
+
+interface Meta {
+  install_id: string
+  version: string
+  os: string
+  arch: string
+  locale: string
+}
+
+// Module-level singletons (one telemetry pipeline per app session).
+let enabled = false
+let meta: Meta | null = null
+let queue: QueuedEvent[] = []
+let flushTimer: ReturnType<typeof setTimeout> | null = null
+let initialized = false
+
+function installId(): string {
+  const KEY = 'spectra-install-id'
+  let id = localStorage.getItem(KEY)
+  if (!id) {
+    id = crypto.randomUUID()
+    localStorage.setItem(KEY, id)
+  }
+  return id
+}
+
+async function flush() {
+  flushTimer = null
+  if (!enabled || !meta || !queue.length) return
+  const batch = queue
+  queue = []
+  try {
+    await fetch(TELEMETRY_ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(INGEST_KEY ? { 'x-spectra-key': INGEST_KEY } : {}) },
+      body: JSON.stringify({ ...meta, events: batch }),
+    })
+  } catch {
+    // Telemetry must never disrupt the app — drop the batch on failure.
+  }
+}
+
+function scheduleFlush() {
+  if (flushTimer) return
+  flushTimer = setTimeout(flush, 4000)
+}
+
+export const useTelemetry = () => {
+  /** Records an event (no-op unless telemetry is enabled). */
+  function track(event: QueuedEvent['event'], props?: Record<string, unknown>) {
+    if (!enabled) return
+    queue.push({ event, props })
+    scheduleFlush()
+  }
+
+  /** Reads the user's preference, gathers environment info, sends `app_start`. */
+  async function init() {
+    if (initialized) return
+    initialized = true
+    try {
+      const settings = await invoke<Settings>('get_settings')
+      if (!settings.anonymous_stats) return
+    } catch {
+      return
+    }
+    try {
+      meta = {
+        install_id: installId(),
+        version: await getVersion(),
+        os: await platform(),
+        arch: await arch(),
+        locale: navigator.language || 'unknown',
+      }
+      enabled = true
+      track('app_start')
+    } catch {
+      enabled = false
+    }
+  }
+
+  /** Lets the Settings toggle turn telemetry on/off at runtime. */
+  function setEnabled(value: boolean) {
+    enabled = value && meta !== null
+    if (value && !initialized) init()
+  }
+
+  return { track, init, setEnabled }
+}

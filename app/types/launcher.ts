@@ -152,8 +152,9 @@ export interface PackInfo {
   pack_format: number | null
   icon: string | null
   is_zip: boolean
+  enabled: boolean
 }
-export interface ShaderInfo { name: string; filename: string; is_zip: boolean }
+export interface ShaderInfo { name: string; filename: string; is_zip: boolean; enabled: boolean }
 export interface ServerInfo { name: string; ip: string; icon: string | null; hidden: boolean }
 // A child entry of a game-dir folder for the export file tree (import.rs).
 export interface DirChild {

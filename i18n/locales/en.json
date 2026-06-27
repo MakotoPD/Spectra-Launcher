@@ -409,7 +409,15 @@
     "serverAddress": "Server address",
     "download": "Download",
     "openLocation": "Open location",
-    "downloaded": "Screenshot saved"
+    "downloaded": "Screenshot saved",
+    "backup": "Backup",
+    "backupDone": "World backed up",
+    "deleteWorldTitle": "Delete world",
+    "deleteWorldConfirm": "Permanently delete the world \"{name}\"? This cannot be undone.",
+    "worldDeleted": "World deleted",
+    "deleteScreenshotTitle": "Delete screenshot",
+    "deleteScreenshotConfirm": "Delete this screenshot? This cannot be undone.",
+    "screenshotDeleted": "Screenshot deleted"
   },
   "modrinth": {
     "title": {

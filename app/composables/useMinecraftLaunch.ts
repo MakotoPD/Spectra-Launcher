@@ -14,6 +14,7 @@ import type { QuickPlay } from '~/types/launcher'
 export const useMinecraftLaunch = (instanceId?: MaybeRefOrGetter<string | undefined>) => {
   const ac = useActivityCenter()
   const instances = useInstancesStore()
+  const telemetry = useTelemetry()
 
   // Per-instance state, keyed by id, so concurrent instances don't bleed into
   // each other's UI.
@@ -54,6 +55,8 @@ export const useMinecraftLaunch = (instanceId?: MaybeRefOrGetter<string | undefi
     await ac.attach()
     try {
       await invoke('launch_instance', { id: launchId, quickPlay: quickPlay ?? null })
+      // Anonymous stats: which loader/MC version actually gets played.
+      telemetry.track('launch', { loader: inst?.loader.type, mc: inst?.mc_version })
       // Sync playtime / last_played from disk once the game has started.
       instances.load()
     } catch (e) {

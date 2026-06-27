@@ -96,6 +96,25 @@
                 square
                 @click="playWorld(group.instance.id, w.folder)"
               />
+              <UButton
+                icon="i-lucide-archive"
+                size="xs"
+                color="neutral"
+                variant="ghost"
+                :loading="busyWorld === `${group.instance.id}/${w.folder}`"
+                :title="$t('content.backup')"
+                square
+                @click="backupWorld(group.instance.id, w)"
+              />
+              <UButton
+                icon="i-lucide-trash-2"
+                size="xs"
+                color="error"
+                variant="ghost"
+                :title="$t('common.remove')"
+                square
+                @click="deleteWorld(group.instance.id, w)"
+              />
             </div>
           </div>
         </section>
@@ -106,11 +125,16 @@
 
 <script setup lang="ts">
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
+import { save, confirm } from '@tauri-apps/plugin-dialog'
 import type { Instance, WorldInfo } from '~/types/launcher'
 
 const instances = useInstancesStore()
 const router = useRouter()
+const toast = useToast()
+const { t } = useI18n()
 const mc = useMinecraftLaunch()
+
+const busyWorld = ref<string | null>(null)
 
 interface WorldGroup { instance: Instance; worlds: WorldInfo[] }
 const groups = ref<WorldGroup[]>([])
@@ -142,9 +166,34 @@ async function load() {
         }
       }),
     )
-    groups.value = settled.filter(g => g.worlds.length > 0)
+    groups.value = settled.filter((g: WorldGroup) => g.worlds.length > 0)
   } finally {
     loading.value = false
+  }
+}
+
+async function backupWorld(instanceId: string, w: WorldInfo) {
+  const dest = await save({ defaultPath: `${w.folder}.zip`, filters: [{ name: 'Zip', extensions: ['zip'] }] })
+  if (typeof dest !== 'string') return
+  busyWorld.value = `${instanceId}/${w.folder}`
+  try {
+    await invoke('backup_world', { id: instanceId, folder: w.folder, dest })
+    toast.add({ title: t('content.backupDone'), color: 'success' })
+  } catch (e) {
+    toast.add({ title: String(e), color: 'error' })
+  } finally {
+    busyWorld.value = null
+  }
+}
+
+async function deleteWorld(instanceId: string, w: WorldInfo) {
+  const ok = await confirm(t('content.deleteWorldConfirm', { name: w.name }), { title: t('content.deleteWorldTitle'), kind: 'warning' })
+  if (!ok) return
+  try {
+    await invoke('delete_world', { id: instanceId, folder: w.folder })
+    await load()
+  } catch (e) {
+    toast.add({ title: String(e), color: 'error' })
   }
 }
 

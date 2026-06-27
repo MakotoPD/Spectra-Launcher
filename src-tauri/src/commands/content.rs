@@ -159,6 +159,8 @@ pub struct PackInfo {
     /// Small icon as a `data:` URL (read from `pack.png`), if present.
     icon: Option<String>,
     is_zip: bool,
+    /// False when the pack is suffixed `.disabled` (Minecraft ignores it).
+    enabled: bool,
 }
 
 #[tauri::command]
@@ -188,28 +190,35 @@ fn list_packs(dir: &Path) -> Result<Vec<PackInfo>, String> {
 }
 
 fn read_pack(path: &Path) -> Option<PackInfo> {
+    // A `.disabled` suffix marks a pack the game ignores. `base` is the
+    // suffix-free name the frontend uses to toggle/delete.
+    let (base, enabled) = strip_disabled(&file_name(path));
+
     if path.is_dir() {
         let mcmeta = std::fs::read_to_string(path.join("pack.mcmeta")).ok();
         let icon = std::fs::read(path.join("pack.png")).ok().map(png_data_url);
         let (description, pack_format) = parse_mcmeta(mcmeta.as_deref());
         Some(PackInfo {
-            name: file_name(path),
-            filename: file_name(path),
+            name: base.clone(),
+            filename: base,
             description,
             pack_format,
             icon,
             is_zip: false,
+            enabled,
         })
-    } else if path.is_file() && has_ext(path, &["zip"]) {
+    } else if path.is_file() && base.to_lowercase().ends_with(".zip") {
+        // zip crate reads by content, so a `*.zip.disabled` file still opens.
         let (mcmeta, icon) = read_zip_pack_assets(path);
         let (description, pack_format) = parse_mcmeta(mcmeta.as_deref());
         Some(PackInfo {
-            name: strip_zip(&file_name(path)),
-            filename: file_name(path),
+            name: strip_zip(&base),
+            filename: base,
             description,
             pack_format,
             icon: icon.map(png_data_url),
             is_zip: true,
+            enabled,
         })
     } else {
         None
@@ -376,6 +385,8 @@ pub struct ShaderInfo {
     name: String,
     filename: String,
     is_zip: bool,
+    /// False when suffixed `.disabled`.
+    enabled: bool,
 }
 
 #[tauri::command]
@@ -388,10 +399,11 @@ pub fn list_shaders(id: String) -> Result<Vec<ShaderInfo>, String> {
     };
     for entry in entries.flatten() {
         let path = entry.path();
+        let (base, enabled) = strip_disabled(&file_name(&path));
         if path.is_dir() {
-            out.push(ShaderInfo { name: file_name(&path), filename: file_name(&path), is_zip: false });
-        } else if path.is_file() && has_ext(&path, &["zip"]) {
-            out.push(ShaderInfo { name: strip_zip(&file_name(&path)), filename: file_name(&path), is_zip: true });
+            out.push(ShaderInfo { name: base.clone(), filename: base, is_zip: false, enabled });
+        } else if path.is_file() && base.to_lowercase().ends_with(".zip") {
+            out.push(ShaderInfo { name: strip_zip(&base), filename: base, is_zip: true, enabled });
         }
     }
     out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
@@ -400,24 +412,88 @@ pub fn list_shaders(id: String) -> Result<Vec<ShaderInfo>, String> {
 
 // ---------- delete content (packs/shaders/datapacks) ----------
 
-/// Deletes a resource pack / shader / datapack (file or folder) by raw filename.
+/// Maps a content kind to its game-dir subfolder.
+fn content_folder(kind: &str) -> Result<&'static str, String> {
+    match kind {
+        "resourcepack" => Ok("resourcepacks"),
+        "shader" => Ok("shaderpacks"),
+        "datapack" => Ok("datapacks"),
+        other => Err(format!("unknown content kind: {other}")),
+    }
+}
+
+/// Deletes a resource pack / shader / datapack (file or folder). `filename` is the
+/// suffix-free name; both the enabled and `.disabled` variants are removed.
 #[tauri::command]
 pub fn delete_content(id: String, kind: String, filename: String) -> Result<(), String> {
-    let folder = match kind.as_str() {
-        "resourcepack" => "resourcepacks",
-        "shader" => "shaderpacks",
-        "datapack" => "datapacks",
-        other => return Err(format!("unknown content kind: {other}")),
-    };
-    // Defend against path traversal — only a bare file name is allowed.
-    let safe = std::path::Path::new(&filename)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .ok_or("invalid filename")?;
-    let target = paths::instance_game_dir(&id).join(folder).join(&safe);
+    let folder = content_folder(&kind)?;
+    let safe = safe_name(&filename)?;
+    let base = paths::instance_game_dir(&id).join(folder);
+    for target in [base.join(&safe), base.join(format!("{safe}.disabled"))] {
+        if target.is_dir() {
+            std::fs::remove_dir_all(&target).map_err(|e| format!("delete: {e}"))?;
+        } else if target.exists() {
+            std::fs::remove_file(&target).map_err(|e| format!("delete: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Enables/disables a resource pack / shader / datapack by toggling the
+/// `.disabled` suffix (file or folder). `filename` is the suffix-free name.
+#[tauri::command]
+pub fn set_content_enabled(id: String, kind: String, filename: String, enabled: bool) -> Result<(), String> {
+    let folder = content_folder(&kind)?;
+    let safe = safe_name(&filename)?;
+    let base = paths::instance_game_dir(&id).join(folder);
+    let on = base.join(&safe);
+    let off = base.join(format!("{safe}.disabled"));
+    if enabled {
+        if off.exists() {
+            std::fs::rename(&off, &on).map_err(|e| e.to_string())?;
+        }
+    } else if on.exists() {
+        std::fs::rename(&on, &off).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// ---------- worlds: delete / backup ----------
+
+/// Deletes a world folder (`saves/<folder>`).
+#[tauri::command]
+pub fn delete_world(id: String, folder: String) -> Result<(), String> {
+    let safe = safe_name(&folder)?;
+    let target = paths::instance_game_dir(&id).join("saves").join(&safe);
     if target.is_dir() {
         std::fs::remove_dir_all(&target).map_err(|e| format!("delete: {e}"))
-    } else if target.exists() {
+    } else {
+        Ok(())
+    }
+}
+
+/// Zips a world folder to `dest` (a user-chosen `.zip` path).
+#[tauri::command]
+pub fn backup_world(id: String, folder: String, dest: String) -> Result<(), String> {
+    let safe = safe_name(&folder)?;
+    let src = paths::instance_game_dir(&id).join("saves").join(&safe);
+    if !src.is_dir() {
+        return Err("world not found".into());
+    }
+    zip_dir(&src, &safe, Path::new(&dest)).map_err(|e| format!("backup: {e}"))
+}
+
+// ---------- screenshots: delete ----------
+
+/// Deletes a screenshot file (`screenshots/<name>`).
+#[tauri::command]
+pub fn delete_screenshot(id: String, name: String) -> Result<(), String> {
+    let safe = safe_name(&name)?;
+    let target = paths::instance_game_dir(&id).join("screenshots").join(&safe);
+    if !has_ext(&target, &IMAGE_EXTS) {
+        return Err("not an image".into());
+    }
+    if target.is_file() {
         std::fs::remove_file(&target).map_err(|e| format!("delete: {e}"))
     } else {
         Ok(())
@@ -590,6 +666,59 @@ fn file_name(path: &Path) -> String {
 
 fn strip_zip(name: &str) -> String {
     name.strip_suffix(".zip").unwrap_or(name).to_string()
+}
+
+/// Splits a `.disabled` suffix off a name, returning (suffix-free name, enabled).
+fn strip_disabled(name: &str) -> (String, bool) {
+    match name.strip_suffix(".disabled") {
+        Some(base) => (base.to_string(), false),
+        None => (name.to_string(), true),
+    }
+}
+
+/// Reduces an untrusted name to a bare file name (defends against path traversal).
+fn safe_name(name: &str) -> Result<String, String> {
+    Path::new(name)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.is_empty())
+        .ok_or_else(|| "invalid name".into())
+}
+
+/// Recursively zips `src` into `dest`, nesting everything under `root_name/`.
+fn zip_dir(src: &Path, root_name: &str, dest: &Path) -> std::io::Result<()> {
+    use std::io::Write;
+    let file = std::fs::File::create(dest)?;
+    let mut zip = zip::ZipWriter::new(file);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    fn walk<W: std::io::Write + std::io::Seek>(
+        zip: &mut zip::ZipWriter<W>,
+        dir: &Path,
+        prefix: &str,
+        opts: zip::write::SimpleFileOptions,
+    ) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let rel = format!("{prefix}/{name}");
+            if path.is_dir() {
+                walk(zip, &path, &rel, opts)?;
+            } else if path.is_file() {
+                zip.start_file(&rel, opts)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                let bytes = std::fs::read(&path)?;
+                zip.write_all(&bytes)?;
+            }
+        }
+        Ok(())
+    }
+
+    walk(&mut zip, src, root_name, opts)?;
+    zip.finish().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    Ok(())
 }
 
 fn has_ext(path: &Path, exts: &[&str]) -> bool {

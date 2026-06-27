@@ -45,12 +45,15 @@ const theme = useThemeStore()
 const activity = useActivityCenter()
 const instances = useInstancesStore()
 const updater = useAutoUpdate()
+const telemetry = useTelemetry()
 onMounted(() => {
   activity.attach()
   // Needed so the indicator can resolve instance names.
   instances.ensureLoaded()
   // Quietly look for a new release; surfaces an "Update" button in Settings.
   updater.checkForUpdates(true)
+  // Anonymous usage stats (no-op unless opted in via Settings → Privacy).
+  telemetry.init()
 })
 onBeforeUnmount(() => activity.detach())
 </script>

@@ -117,6 +117,25 @@
           square
           @click="quickPlayWorld(w.folder)"
         />
+        <UButton
+          icon="i-lucide-archive"
+          size="xs"
+          color="neutral"
+          variant="ghost"
+          :loading="busyWorld === w.folder"
+          :title="$t('content.backup')"
+          square
+          @click="backupWorld(w)"
+        />
+        <UButton
+          icon="i-lucide-trash-2"
+          size="xs"
+          color="error"
+          variant="ghost"
+          :title="$t('common.remove')"
+          square
+          @click="deleteWorld(w)"
+        />
       </div>
     </div>
 
@@ -126,6 +145,7 @@
         v-for="p in packs"
         :key="p.filename"
         class="flex items-center gap-3 rounded-xl border border-default bg-white/3 p-3"
+        :class="{ 'opacity-55': !p.enabled }"
       >
         <img
           v-if="p.icon"
@@ -149,6 +169,11 @@
         <span v-if="p.pack_format != null" class="shrink-0 font-mono text-[11px] text-neutral-500">
           {{ $t('content.format') }} {{ p.pack_format }}
         </span>
+        <USwitch
+          :model-value="p.enabled"
+          :title="p.enabled ? $t('mods.disable') : $t('mods.enable')"
+          @update:model-value="toggleContent(p.filename, $event)"
+        />
         <UButton
           icon="i-lucide-trash-2"
           color="error"
@@ -166,6 +191,7 @@
         v-for="s in shaders"
         :key="s.filename"
         class="flex items-center gap-3 rounded-xl border border-default bg-white/3 p-3"
+        :class="{ 'opacity-55': !s.enabled }"
       >
         <div class="flex size-11 shrink-0 items-center justify-center rounded-lg bg-white/5">
           <UIcon name="i-lucide-sparkles" class="size-5 text-neutral-500" />
@@ -175,6 +201,11 @@
           <span class="block truncate font-mono text-[10px] text-neutral-600" :title="s.filename">{{ s.filename }}</span>
         </div>
         <UBadge v-if="s.is_zip" color="neutral" variant="subtle" size="xs" label="zip" />
+        <USwitch
+          :model-value="s.enabled"
+          :title="s.enabled ? $t('mods.disable') : $t('mods.enable')"
+          @update:model-value="toggleContent(s.filename, $event)"
+        />
         <UButton
           icon="i-lucide-trash-2"
           color="error"
@@ -290,6 +321,7 @@
             <div class="flex items-center gap-1.5">
               <UButton icon="i-lucide-download" size="xs" color="neutral" variant="soft" :label="$t('content.download')" @click="downloadShot(lightbox)" />
               <UButton icon="i-lucide-folder-open" size="xs" color="neutral" variant="soft" :label="$t('content.openLocation')" @click="revealShot(lightbox)" />
+              <UButton icon="i-lucide-trash-2" size="xs" color="error" variant="soft" :label="$t('common.remove')" @click="deleteScreenshot(lightbox)" />
               <UButton icon="i-lucide-x" size="xs" color="neutral" variant="ghost" square @click="lightbox = null" />
             </div>
           </div>
@@ -319,7 +351,7 @@
 
 <script setup lang="ts">
 import { invoke, convertFileSrc } from '@tauri-apps/api/core'
-import { save } from '@tauri-apps/plugin-dialog'
+import { save, confirm } from '@tauri-apps/plugin-dialog'
 import type { ScreenshotInfo, WorldInfo, PackInfo, ShaderInfo, ServerInfo, PingResult } from '~/types/launcher'
 import type { ContentKind } from '~/types/modrinth'
 
@@ -493,6 +525,58 @@ async function removeContent(filename: string) {
   if (!installKind.value) return
   try {
     await invoke('delete_content', { id: props.instanceId, kind: installKind.value, filename })
+    await load()
+  } catch (e) {
+    toast.add({ title: String(e), color: 'error' })
+  }
+}
+
+// Enable/disable a resource pack / shader / datapack (.disabled suffix).
+async function toggleContent(filename: string, enabled: boolean) {
+  if (!installKind.value) return
+  try {
+    await invoke('set_content_enabled', { id: props.instanceId, kind: installKind.value, filename, enabled })
+    await load()
+  } catch (e) {
+    toast.add({ title: String(e), color: 'error' })
+  }
+}
+
+// --- worlds: backup / delete ---
+const busyWorld = ref<string | null>(null)
+
+async function backupWorld(w: WorldInfo) {
+  const dest = await save({ defaultPath: `${w.folder}.zip`, filters: [{ name: 'Zip', extensions: ['zip'] }] })
+  if (typeof dest !== 'string') return
+  busyWorld.value = w.folder
+  try {
+    await invoke('backup_world', { id: props.instanceId, folder: w.folder, dest })
+    toast.add({ title: t('content.backupDone'), color: 'success' })
+  } catch (e) {
+    toast.add({ title: String(e), color: 'error' })
+  } finally {
+    busyWorld.value = null
+  }
+}
+
+async function deleteWorld(w: WorldInfo) {
+  const ok = await confirm(t('content.deleteWorldConfirm', { name: w.name }), { title: t('content.deleteWorldTitle'), kind: 'warning' })
+  if (!ok) return
+  try {
+    await invoke('delete_world', { id: props.instanceId, folder: w.folder })
+    await load()
+  } catch (e) {
+    toast.add({ title: String(e), color: 'error' })
+  }
+}
+
+// --- screenshots: delete ---
+async function deleteScreenshot(s: ScreenshotInfo) {
+  const ok = await confirm(t('content.deleteScreenshotConfirm'), { title: t('content.deleteScreenshotTitle'), kind: 'warning' })
+  if (!ok) return
+  try {
+    await invoke('delete_screenshot', { id: props.instanceId, name: s.name })
+    lightboxIndex.value = null
     await load()
   } catch (e) {
     toast.add({ title: String(e), color: 'error' })

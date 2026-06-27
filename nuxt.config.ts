@@ -56,6 +56,9 @@ export default defineNuxtConfig({
     locales: [
       { code: 'en', name: 'English', file: 'en.json' },
       { code: 'pl', name: 'Polski', file: 'pl.json' },
+      { code: 'de', name: 'Deutsch', file: 'de.json' },
+      { code: 'es', name: 'Español', file: 'es.json' },
+      { code: 'fr', name: 'Français', file: 'fr.json' },
     ],
     // Auto-detect the OS/browser language on first run, then remember the
     // user's choice across launches via a cookie.

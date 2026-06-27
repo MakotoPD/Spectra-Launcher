@@ -286,7 +286,7 @@ const privacyOptions: { key: PrivacyKey; wip?: boolean }[] = [
   { key: 'track_playtime' },
   { key: 'discord_rpc' },
   { key: 'crash_reports', wip: true },
-  { key: 'anonymous_stats', wip: true },
+  { key: 'anonymous_stats' },
 ]
 
 const offlineName = ref('')
@@ -326,6 +326,12 @@ watch(settings, () => {
   saveTimer = setTimeout(() => invoke('save_settings', { settings: snapshot }).catch(() => {}), 500)
 }, { deep: true })
 
+// Toggle anonymous telemetry on/off the moment the user flips the switch.
+const telemetry = useTelemetry()
+watch(() => settings.value?.anonymous_stats, (on) => {
+  if (on !== undefined) telemetry.setEnabled(on)
+})
+
 const themeOptions = computed<{ value: ThemeMode; label: string; preview: string }[]>(() => [
   { value: 'dark', label: t('settings.appearance.themeDark'), preview: '#0a0a0b' },
   { value: 'oled', label: t('settings.appearance.themeOled'), preview: '#000000' },
@@ -342,7 +348,7 @@ const accentHex: Record<string, string> = {
 const localeItems = computed(() =>
   (locales.value as { code: string; name?: string }[]).map(l => ({ label: l.name ?? l.code, value: l.code })),
 )
-const onLocaleChange = (code: string) => setLocale(code as 'en' | 'pl')
+const onLocaleChange = (code: string) => setLocale(code as 'en' | 'pl' | 'de' | 'es' | 'fr')
 
 const avatarUrl = (acc: Account) =>
   acc.kind === 'microsoft' ? `https://crafatar.com/avatars/${acc.uuid}?overlay` : undefined
