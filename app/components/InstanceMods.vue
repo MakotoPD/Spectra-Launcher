@@ -263,6 +263,41 @@
         </div>
       </template>
     </UModal>
+
+    <!-- delete dependencies modal -->
+    <UModal v-model:open="depsOpen" :title="$t('mods.depsTitle', { name: depsTarget?.name ?? depsTarget?.filename ?? '' })" :ui="{ content: 'max-w-md' }">
+      <template #body>
+        <p class="mb-3 text-sm text-muted">{{ $t('mods.depsDesc') }}</p>
+        <div class="max-h-[50vh] space-y-1.5 overflow-y-auto">
+          <label
+            v-for="d in deps"
+            :key="d.filename"
+            class="flex cursor-pointer items-center gap-3 rounded-lg border border-default bg-white/3 p-2.5"
+          >
+            <UCheckbox
+              :model-value="depsChecked.has(d.filename)"
+              @update:model-value="toggleDep(d.filename, $event)"
+            />
+            <img v-if="d.icon_url" :src="d.icon_url" class="size-8 shrink-0 rounded-md object-cover" :alt="d.name" >
+            <div v-else class="flex size-8 shrink-0 items-center justify-center rounded-md bg-white/5">
+              <UIcon name="i-lucide-blocks" class="size-4 text-neutral-500" />
+            </div>
+            <span class="min-w-0 flex-1 truncate text-sm">{{ d.name }}</span>
+          </label>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex w-full justify-end gap-2">
+          <UButton variant="ghost" color="neutral" :label="$t('mods.depsKeep')" @click="keepDeps" />
+          <UButton
+            color="error"
+            icon="i-lucide-trash-2"
+            :label="allDepsChecked ? $t('mods.depsDeleteAll') : $t('mods.depsDeleteSelected')"
+            @click="confirmDeps"
+          />
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>
 
@@ -570,13 +605,67 @@ async function toggle(mod: ModEntry, enabled: boolean) {
   }
 }
 
-async function remove(mod: ModEntry) {
+// --- delete (with orphaned-dependency prompt) ---
+interface RemovableDep { project_id: string; name: string; filename: string; icon_url: string | null; kind: string }
+const depsOpen = ref(false)
+const depsTarget = ref<ModEntry | null>(null)
+const deps = ref<RemovableDep[]>([])
+const depsChecked = ref<Set<string>>(new Set())
+const allDepsChecked = computed(() => deps.value.length > 0 && depsChecked.value.size === deps.value.length)
+
+function toggleDep(filename: string, on: boolean) {
+  const next = new Set(depsChecked.value)
+  if (on) next.add(filename)
+  else next.delete(filename)
+  depsChecked.value = next
+}
+
+/** Deletes the mod and the given dependency filenames, updating the list. */
+async function deleteMods(mod: ModEntry, depFilenames: string[]) {
   try {
-    await invoke('delete_mod', { instanceId: props.instanceId, filename: mod.filename })
-    mods.value = mods.value.filter(m => m.filename !== mod.filename)
+    const all = [mod.filename, ...depFilenames]
+    for (const filename of all) {
+      await invoke('delete_mod', { instanceId: props.instanceId, filename })
+    }
+    const removed = new Set(all)
+    mods.value = mods.value.filter(m => !removed.has(m.filename))
   } catch (e) {
     toast.add({ title: String(e), color: 'error' })
   }
+}
+
+async function remove(mod: ModEntry) {
+  try {
+    const found = await invoke<RemovableDep[]>('get_removable_dependencies', {
+      instanceId: props.instanceId,
+      filename: mod.filename,
+    })
+    if (!found.length) {
+      await deleteMods(mod, [])
+      return
+    }
+    depsTarget.value = mod
+    deps.value = found
+    depsChecked.value = new Set(found.map(d => d.filename))
+    depsOpen.value = true
+  } catch (e) {
+    toast.add({ title: String(e), color: 'error' })
+  }
+}
+
+async function confirmDeps() {
+  const mod = depsTarget.value
+  if (!mod) return
+  const selected = deps.value.filter(d => depsChecked.value.has(d.filename)).map(d => d.filename)
+  depsOpen.value = false
+  await deleteMods(mod, selected)
+}
+
+async function keepDeps() {
+  const mod = depsTarget.value
+  if (!mod) return
+  depsOpen.value = false
+  await deleteMods(mod, [])
 }
 
 function openBrowser() {

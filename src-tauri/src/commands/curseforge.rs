@@ -726,6 +726,13 @@ fn install_rec<'a>(
 
         visited.insert(project_id.to_string());
         let (game_versions, loaders) = split_game_versions(&file.game_versions);
+        // Record required dependencies (relation_type 3) for orphan cleanup on delete.
+        let dep_project_ids: Vec<String> = file
+            .dependencies
+            .iter()
+            .filter(|d| d.relation_type == 3)
+            .map(|d| d.mod_id.to_string())
+            .collect();
         let item = InstalledItem {
             project_id: project_id.to_string(),
             version_id: file_id.to_string(),
@@ -737,6 +744,7 @@ fn install_rec<'a>(
             game_versions,
             loaders,
             dependency: is_dependency,
+            dependencies: dep_project_ids,
             installed_at: chrono::Utc::now().to_rfc3339(),
             provider: "curseforge".to_string(),
         };
@@ -1072,6 +1080,7 @@ pub async fn curseforge_match_local(instance_id: String) -> Result<usize, String
             game_versions,
             loaders,
             dependency: false,
+            dependencies: Vec::new(),
             installed_at: chrono::Utc::now().to_rfc3339(),
             provider: "curseforge".to_string(),
         };
@@ -1126,6 +1135,7 @@ pub async fn curseforge_match_file(instance_id: String, filename: String) -> Res
         game_versions,
         loaders,
         dependency: false,
+        dependencies: Vec::new(),
         installed_at: chrono::Utc::now().to_rfc3339(),
         provider: "curseforge".to_string(),
     };
@@ -1328,6 +1338,7 @@ pub(crate) async fn install_modpack_bytes(
             game_versions,
             loaders,
             dependency: false,
+            dependencies: Vec::new(),
             installed_at: chrono::Utc::now().to_rfc3339(),
             provider: "curseforge".to_string(),
         };
@@ -1465,6 +1476,7 @@ pub fn resolve_blocked_mods(instance_id: String, dir: Option<String>) -> Result<
                 game_versions: vec![],
                 loaders: vec![],
                 dependency: false,
+                dependencies: Vec::new(),
                 installed_at: chrono::Utc::now().to_rfc3339(),
                 provider: "curseforge".to_string(),
             });

@@ -348,7 +348,7 @@ const accentHex: Record<string, string> = {
 const localeItems = computed(() =>
   (locales.value as { code: string; name?: string }[]).map(l => ({ label: l.name ?? l.code, value: l.code })),
 )
-const onLocaleChange = (code: string) => setLocale(code as 'en' | 'pl' | 'de' | 'es' | 'fr')
+const onLocaleChange = (code: string) => setLocale(code as 'en' | 'pl' | 'de' | 'es' | 'fr' | 'zh' | 'ru')
 
 const avatarUrl = (acc: Account) =>
   acc.kind === 'microsoft' ? `https://crafatar.com/avatars/${acc.uuid}?overlay` : undefined

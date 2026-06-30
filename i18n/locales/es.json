@@ -500,7 +500,12 @@
     "linkHint": "Asociar jars locales con Modrinth y CurseForge",
     "checkModrinth": "Comprobar en Modrinth",
     "linked": "{n} mod(s) vinculado(s) con Modrinth",
-    "noMatch": "No se encontró coincidencia en Modrinth"
+    "noMatch": "No se encontró coincidencia en Modrinth",
+    "depsTitle": "Dependencias de {name}",
+    "depsDesc": "Este mod instaló estas dependencias. ¿Eliminarlas también?",
+    "depsDeleteAll": "Eliminar todas",
+    "depsDeleteSelected": "Eliminar seleccionadas",
+    "depsKeep": "No eliminar"
   },
   "skins": {
     "saved": "Skins guardadas",

@@ -500,7 +500,12 @@
     "linkHint": "Match local jars to Modrinth and CurseForge",
     "checkModrinth": "Check on Modrinth",
     "linked": "Linked {n} mod(s) with Modrinth",
-    "noMatch": "No match found on Modrinth"
+    "noMatch": "No match found on Modrinth",
+    "depsTitle": "Dependencies of {name}",
+    "depsDesc": "This mod installed these dependencies. Delete them too?",
+    "depsDeleteAll": "Delete all",
+    "depsDeleteSelected": "Delete selected",
+    "depsKeep": "Don't delete"
   },
   "skins": {
     "saved": "Saved skins",

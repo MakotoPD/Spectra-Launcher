@@ -270,6 +270,7 @@ pub async fn modrinth_match_file(instance_id: String, filename: String) -> Resul
         game_versions: version.game_versions.clone(),
         loaders: version.loaders.clone(),
         dependency: false,
+        dependencies: Vec::new(),
         installed_at: chrono::Utc::now().to_rfc3339(),
         provider: "modrinth".to_string(),
     };
@@ -446,6 +447,13 @@ pub async fn update_all_mods(
         item.filename = new_filename;
         item.game_versions = v.game_versions;
         item.loaders = v.loaders;
+        // Refresh required-dependency links in case the new version changed them.
+        item.dependencies = v
+            .dependencies
+            .iter()
+            .filter(|d| d.dependency_type == "required")
+            .filter_map(|d| d.project_id.clone())
+            .collect();
         updated += 1;
     }
 
@@ -495,6 +503,10 @@ pub struct InstalledItem {
     pub loaders: Vec<String>,
     /// Was this auto-installed as a dependency of another project?
     pub dependency: bool,
+    /// Project ids this item requires (recorded at install time). Lets deletion
+    /// offer to remove orphaned dependencies. Empty for older installs.
+    #[serde(default)]
+    pub dependencies: Vec<String>,
     pub installed_at: String,
     /// "modrinth" | "curseforge" — which provider this came from (for updates).
     #[serde(default = "default_provider")]
@@ -608,6 +620,77 @@ pub fn remove_index_entry(instance_id: &str, filename: &str) {
     if index.items.len() != before {
         let _ = write_content_index(instance_id, &index);
     }
+}
+
+/// A dependency that would be orphaned by deleting a mod.
+#[derive(Serialize)]
+pub struct RemovableDep {
+    pub project_id: String,
+    pub name: String,
+    pub filename: String,
+    pub icon_url: Option<String>,
+    pub kind: String,
+}
+
+/// Given a mod being deleted (by `filename`), returns the dependencies that
+/// would become orphaned: auto-installed deps that no *remaining* mod requires.
+/// Computed transitively (removing a dep can orphan its own deps) with reference
+/// counting, so shared dependencies are never offered for removal.
+#[tauri::command]
+pub fn get_removable_dependencies(
+    instance_id: String,
+    filename: String,
+) -> Result<Vec<RemovableDep>, String> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+
+    let index = read_content_index(&instance_id);
+    let items = &index.items;
+
+    let Some(root) = items.iter().find(|i| i.filename == filename) else {
+        return Ok(Vec::new());
+    };
+
+    let by_pid: HashMap<&str, &InstalledItem> =
+        items.iter().map(|i| (i.project_id.as_str(), i)).collect();
+
+    // Project ids that will be gone: the deleted mod + confirmed orphans.
+    let mut removing: HashSet<String> = HashSet::new();
+    removing.insert(root.project_id.clone());
+
+    let mut result: Vec<RemovableDep> = Vec::new();
+    let mut queue: VecDeque<String> = root.dependencies.iter().cloned().collect();
+
+    while let Some(pid) = queue.pop_front() {
+        if removing.contains(&pid) {
+            continue;
+        }
+        let Some(dep) = by_pid.get(pid.as_str()) else { continue }; // not installed
+        if !dep.dependency {
+            continue; // installed explicitly by the user — keep it
+        }
+        // Still required by something that is staying?
+        let still_needed = items.iter().any(|i| {
+            !removing.contains(&i.project_id)
+                && i.project_id != pid
+                && i.dependencies.iter().any(|d| d == &pid)
+        });
+        if still_needed {
+            continue;
+        }
+        removing.insert(pid.clone());
+        result.push(RemovableDep {
+            project_id: dep.project_id.clone(),
+            name: dep.name.clone(),
+            filename: dep.filename.clone(),
+            icon_url: dep.icon_url.clone(),
+            kind: dep.kind.clone(),
+        });
+        for d in &dep.dependencies {
+            queue.push_back(d.clone());
+        }
+    }
+
+    Ok(result)
 }
 
 // ===== Full project (with markdown body) =====
@@ -768,6 +851,14 @@ fn install_rec<'a>(
         std::fs::write(dir.join(safe_name(&file.filename)), &bytes).map_err(|e| format!("write file: {e}"))?;
 
         visited.insert(version.project_id.clone());
+        // Record which projects this version requires, so deletion can later
+        // offer to remove orphaned dependencies.
+        let dep_project_ids: Vec<String> = version
+            .dependencies
+            .iter()
+            .filter(|d| d.dependency_type == "required")
+            .filter_map(|d| d.project_id.clone())
+            .collect();
         let item = InstalledItem {
             project_id: version.project_id.clone(),
             version_id: version.id.clone(),
@@ -779,6 +870,7 @@ fn install_rec<'a>(
             game_versions: version.game_versions.clone(),
             loaders: version.loaders.clone(),
             dependency: is_dependency,
+            dependencies: dep_project_ids,
             installed_at: chrono::Utc::now().to_rfc3339(),
             provider: "modrinth".to_string(),
         };
@@ -1411,6 +1503,7 @@ async fn index_modpack_content(
             game_versions: version.game_versions.clone(),
             loaders: version.loaders.clone(),
             dependency: false,
+            dependencies: Vec::new(),
             installed_at: chrono::Utc::now().to_rfc3339(),
             provider: "modrinth".to_string(),
         };
@@ -1511,6 +1604,7 @@ pub async fn match_local_mods(instance_id: String) -> Result<usize, String> {
             game_versions: version.game_versions.clone(),
             loaders: version.loaders.clone(),
             dependency: false,
+            dependencies: Vec::new(),
             installed_at: chrono::Utc::now().to_rfc3339(),
             provider: "modrinth".to_string(),
         };

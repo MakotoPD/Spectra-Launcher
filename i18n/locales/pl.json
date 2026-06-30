@@ -501,7 +501,12 @@
     "linkHint": "Dopasuj lokalne jary do Modrinth i CurseForge",
     "checkModrinth": "Sprawdź na Modrinth",
     "linked": "Połączono {n} mod(ów) z Modrinth",
-    "noMatch": "Nie znaleziono na Modrinth"
+    "noMatch": "Nie znaleziono na Modrinth",
+    "depsTitle": "Zależności moda {name}",
+    "depsDesc": "Ten mod zainstalował te zależności. Usunąć je też?",
+    "depsDeleteAll": "Usuń wszystkie",
+    "depsDeleteSelected": "Usuń zaznaczone",
+    "depsKeep": "Nie usuwaj"
   },
   "skins": {
     "saved": "Zapisane skórki",

@@ -500,7 +500,12 @@
     "linkHint": "Lokale Jars mit Modrinth und CurseForge abgleichen",
     "checkModrinth": "Auf Modrinth prüfen",
     "linked": "{n} Mod(s) mit Modrinth verknüpft",
-    "noMatch": "Kein Treffer auf Modrinth gefunden"
+    "noMatch": "Kein Treffer auf Modrinth gefunden",
+    "depsTitle": "Abhängigkeiten von {name}",
+    "depsDesc": "Dieser Mod hat diese Abhängigkeiten installiert. Auch löschen?",
+    "depsDeleteAll": "Alle löschen",
+    "depsDeleteSelected": "Ausgewählte löschen",
+    "depsKeep": "Nicht löschen"
   },
   "skins": {
     "saved": "Gespeicherte Skins",

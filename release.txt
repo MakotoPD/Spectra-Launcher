@@ -1,3 +1,9 @@
+## Changes (v0.4.0)
+
+### ✨ Features & Improvements
+- **Smart dependency cleanup**: when you delete a mod, Spectra now checks for dependencies it pulled in and offers to remove the ones nothing else needs. A dialog lists them (all ticked by default) with "Delete all" — untick any and it becomes "Delete selected", or choose "Don't delete" to keep them. Shared dependencies are never removed.
+- **More languages**: the launcher is now available in Russian and China — auto-detected on first run.
+
 ## Changes (v0.3.0)
 
 ### ✨ Features & Improvements

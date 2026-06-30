@@ -133,6 +133,7 @@ pub fn run() {
             commands::modrinth::modrinth_categories,
             commands::modrinth::modrinth_install_with_deps,
             commands::modrinth::get_installed_content,
+            commands::modrinth::get_removable_dependencies,
             commands::modrinth::check_conflicts,
             commands::modrinth::modrinth_install_modpack,
             commands::modrinth::import_file,
