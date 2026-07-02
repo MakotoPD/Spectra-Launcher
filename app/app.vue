@@ -1,15 +1,31 @@
 <template>
   <UApp class="overflow-hidden">
     <!-- Titlebar -->
-    <div data-tauri-drag-region class="z-10 flex w-full justify-between items-center h-10 px-2 text-gray-100 select-none">
-      <div class="flex items-center gap-2 pl-2">
-        <img src="/logo-transparent.png" alt="Spectra Launcher Icon" class="h-5 object-contain" />
-        <span>Spectra Launcher</span>
-      </div>
-      <div class="flex items-center gap-4">
-        <TitlebarActivity />
-        <WindowControls />
-      </div>
+    <!-- On macOS the window controls live on the left and the launcher name is
+         centered; everywhere else the name is on the left and controls right. -->
+    <div data-tauri-drag-region class="z-10 relative flex w-full justify-between items-center h-10 px-2 text-gray-100 select-none">
+      <template v-if="isMac">
+        <div class="flex items-center">
+          <WindowControls />
+        </div>
+        <div class="absolute left-1/2 -translate-x-1/2 flex items-center gap-2">
+          <img src="/logo-transparent.png" alt="Spectra Launcher Icon" class="h-5 object-contain" />
+          <span>Spectra Launcher</span>
+        </div>
+        <div class="flex items-center gap-4">
+          <TitlebarActivity />
+        </div>
+      </template>
+      <template v-else>
+        <div class="flex items-center gap-2 pl-2">
+          <img src="/logo-transparent.png" alt="Spectra Launcher Icon" class="h-5 object-contain" />
+          <span>Spectra Launcher</span>
+        </div>
+        <div class="flex items-center gap-4">
+          <TitlebarActivity />
+          <WindowControls />
+        </div>
+      </template>
     </div>
 
 
@@ -39,6 +55,10 @@
 // Theme is applied in plugins/theme.client.ts; here we just expose the reactive
 // background class to the shell.
 const theme = useThemeStore()
+
+// Drives the platform-specific titlebar layout (macOS puts controls on the left).
+const { platform } = usePlatform()
+const isMac = computed(() => platform.value === 'macos')
 
 // Attach the global launch/install event hub once, so the titlebar activity
 // indicator works regardless of which page is open.

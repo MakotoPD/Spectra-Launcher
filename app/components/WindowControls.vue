@@ -1,5 +1,5 @@
 <template>
-  <div v-if="isWindows" class="flex gap-1" style="-webkit-app-region: no-drag">
+  <div v-if="showControls" class="flex gap-1" :class="{ 'flex-row-reverse': isMac }" style="-webkit-app-region: no-drag">
     <button class="flex items-center justify-center p-1 bg-gray-800/20 hover:bg-gray-800 rounded-md h-6 w-6 duration-300 cursor-pointer" title="Minimize" @click="minimize">
       <svg width="8" height="1" viewBox="0 0 10 1">
         <rect width="10" height="1" fill="currentColor" />
@@ -29,13 +29,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { platform } from '@tauri-apps/plugin-os'
 
-const isWindows = ref(false)
+const { platform, ready } = usePlatform()
+
 const isMaximized = ref(false)
 const appWindow = getCurrentWindow()
+
+// Custom controls on every desktop OS. On macOS they sit on the left in
+// reverse order (close, maximize, minimize).
+const showControls = computed(() => platform.value === 'windows' || platform.value === 'linux' || platform.value === 'macos')
+const isMac = computed(() => platform.value === 'macos')
 
 const minimize = async () => { await appWindow.minimize() }
 
@@ -52,15 +57,12 @@ const close = async () => { await appWindow.close() }
 let unlistenResize: (() => void) | null = null
 
 onMounted(async () => {
-  const os = await platform()
-  isWindows.value = os === 'windows'
+  await ready
 
-  if (isWindows.value) {
+  isMaximized.value = await appWindow.isMaximized()
+  unlistenResize = await appWindow.onResized(async () => {
     isMaximized.value = await appWindow.isMaximized()
-    unlistenResize = await appWindow.onResized(async () => {
-      isMaximized.value = await appWindow.isMaximized()
-    })
-  }
+  })
 })
 
 onUnmounted(() => {
